@@ -124,6 +124,15 @@ if [[ "$MODE" == "files" ]]; then
 		*) die "sistema de ficheros $FSTYPE no soportado por la placa; usa --format fat32" ;;
 	esac
 	echo "==> Partición   : /dev/$PART ($FSTYPE)"
+	# Aviso útil: si el FAT está marcado como sucio/inconsistente, escribir
+	# ficheros grandes ahí es una lotería (los clústeres pueden solaparse con
+	# el propio FAT). Lo detectamos antes de tocar nada.
+	if [[ "$FSTYPE" == "vfat" ]] && command -v dosfsck >/dev/null 2>&1; then
+		if dosfsck -n "/dev/$PART" 2>&1 | grep -qE 'Dirty bit is set|not properly unmounted'; then
+			echo "    [aviso] el FAT32 está marcado como SUCIO: puede corromper la copia."
+			echo "            recomendable repetir con --format fat32 (borra el pendrive)."
+		fi
+	fi
 	mount "/dev/$PART" "$MNT"
 
 	NEED="$(uncompressed_bytes)"
@@ -133,16 +142,35 @@ if [[ "$MODE" == "files" ]]; then
 	[[ "$NEED" -lt 4294967296 ]] || die "la imagen no cabe en FAT32 (>4GB); usa --format exfat"
 
 	PLAIN="$(plain_name)"
-	echo "==> Escribiendo $PLAIN ..."
+	echo "==> Escribiendo $PLAIN (calculando el checksum del origen a la vez)..."
+	# El checksum se calcula sobre el MISMO flujo que se escribe (un solo
+	# pase de descompresión) y luego se compara con lo que se lee del
+	# pendrive. Antes se comparaba la copia consigo misma, lo que no
+	# detectaba ni escrituras corruptas ni sistemas de ficheros dañados.
+	TMPDIR_K2B="$(mktemp -d /tmp/k2b-sha.XXXXXX)"
+	FIFO="$TMPDIR_K2B/fifo"
+	mkfifo "$FIFO"
+	( sha256sum < "$FIFO" | cut -d' ' -f1 > "$TMPDIR_K2B/src.sha256" ) &
+	SHA_PID=$!
 	if [[ "$IMG" == *.xz ]]; then
-		xz -dc "$IMG" > "$MNT/$PLAIN"
+		xz -dc "$IMG" | tee "$FIFO" > "$MNT/$PLAIN"
 	else
-		cp -f "$IMG" "$MNT/$PLAIN"
+		cat "$IMG" | tee "$FIFO" > "$MNT/$PLAIN"
 	fi
+	wait "$SHA_PID"
+	SRC_SHA="$(cat "$TMPDIR_K2B/src.sha256")"
+	rm -rf "$TMPDIR_K2B"
+	[[ -n "$SRC_SHA" ]] || die "no pude calcular el checksum del origen"
 	sync
-	echo "==> Generando y verificando checksum de la copia..."
-	( cd "$MNT" && sha256sum "$PLAIN" > "$PLAIN.sha256" && sha256sum -c "$PLAIN.sha256" ) \
-		|| die "la copia no coincide con la imagen; NO la uses"
+	printf '%s  %s\n' "$SRC_SHA" "$PLAIN" > "$MNT/$PLAIN.sha256"
+	sync
+	echo "    origen : $SRC_SHA"
+	echo "==> Verificando la copia en el pendrive (leyendo del pendrive)..."
+	if ! ( cd "$MNT" && sha256sum -c "$PLAIN.sha256" ); then
+		die "la copia NO coincide con la imagen. Si el pendrive ya tenía datos, su
+       sistema de ficheros puede estar dañado: pásale dosfsck o formatea con
+       --format fat32 y vuelve a intentarlo."
+	fi
 
 	SRCDIR="$(cd "$(dirname "$0")" && pwd)"
 	if [[ -f "$SRCDIR/k2b-emmc-install.sh" ]]; then
