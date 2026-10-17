@@ -27,6 +27,7 @@ misma REV 2.2) es construir con **`pyavitz/debian-image-builder`** y kernel
 | `scripts/fetch-swt6621s-firmware.sh` | Descarga y verifica (SHA256) el firmware del vendedor como respaldo. |
 | `scripts/customize-image.sh` | Mónta la imagen y arregla el firmware + WiFi + MAC estable + sudo. |
 | `scripts/download-image.sh` | Descarga el `.img.xz` del release y verifica su SHA256. |
+| `scripts/verify-image.sh` | Comprueba la imagen (firmware, módulos, red, arranque) antes de grabarla. |
 | `scripts/make-pendrive.sh` | Prepara el pendrive (modo `files` con instalador, o `raw` arrancable). |
 | `scripts/k2b-emmc-install.sh` | Se ejecuta EN LA PLACA: clona la imagen al eMMC y verifica. |
 | `userpatches/` | Intentos previos con Armbian (obsoletos para esta placa). |
@@ -72,7 +73,17 @@ Tarda ~40-60 min y publica un *release* con `*.img.xz` + `*.img.xz.sha256`.
 
 Verifica el SHA256 antes de seguir; si no coincide, aborta.
 
-### 3) Preparar el pendrive
+### 3) Verificar el contenido de la imagen
+
+```bash
+xz -dk dist/<imagen>.img.xz
+sudo ./scripts/verify-image.sh dist/<imagen>.img
+```
+
+Monta la imagen en solo lectura y comprueba firmware, módulos, red, usuario y
+arranque. Debe terminar con `0 críticos`; si algún crítico falla, **no la grabes**.
+
+### 4) Preparar el pendrive
 
 ```bash
 # Recomendado: deja la imagen + instalador + LEEME en el pendrive (FAT32/exFAT)
@@ -84,7 +95,7 @@ sudo ./scripts/make-pendrive.sh dist/<imagen>.img.xz /dev/sdX --format fat32
 Pide escribir el nombre del dispositivo para confirmar, y verifica el checksum
 de la copia. En el pendrive queda un `LEEME.txt` con los pasos exactos.
 
-### 4) Instalar en la eMMC (en la placa, con monitor + teclado)
+### 5) Instalar en la eMMC (en la placa, con monitor + teclado)
 
 ```bash
 lsblk                                  # localiza el pendrive (p.ej. /dev/sda1)
@@ -98,7 +109,7 @@ particiones, pide confirmación (`SI`), escribe con `dd conv=fsync` y **verifica
 leyendo de vuelta** el SHA256. Después: `sudo poweroff`, quitar el pendrive y
 **la SD**, y encender.
 
-### 5) Primer arranque desde la eMMC
+### 6) Primer arranque desde la eMMC
 
 La raíz se amplía sola a los 32 GB del eMMC y se une al WiFi (por
 `/boot/credentials.txt`). Se conecta con `ssh leandro@<ip>`
