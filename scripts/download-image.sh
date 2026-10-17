@@ -21,15 +21,24 @@ mkdir -p "$DEST"
 DEST="$(cd "$DEST" && pwd)"
 
 resolve_asset(){
-	# $1 = tag ("latest" o un tag concreto) -> imprime la URL del .img.xz
-	local tag="$1" json=""
+	# $1 = tag ("latest" o un tag concreto) -> imprime URLs de descarga directa
+	local tag="$1" json="" t="" names=""
+	# Con gh autenticado no hace falta la API pública (usa plantillas de Go,
+	# sin depender de jq; y construye URLs de descarga, no de la API).
 	if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
 		if [[ "$tag" == "latest" ]]; then
-			gh release view --repo "$REPO" --json assets -q '.assets[].url' 2>/dev/null
+			t="$(gh release view --repo "$REPO" --json tagName --template '{{.tagName}}' 2>/dev/null || true)"
 		else
-			gh release view "$tag" --repo "$REPO" --json assets -q '.assets[].url' 2>/dev/null
+			t="$tag"
 		fi
-		return
+		if [[ -n "$t" ]]; then
+			names="$(gh release view "$t" --repo "$REPO" --json assets \
+				--template '{{range .assets}}{{.name}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+			if [[ -n "$names" ]]; then
+				printf '%s\n' "$names" | sed "s|^|https://github.com/${REPO}/releases/download/${t}/|"
+				return
+			fi
+		fi
 	fi
 	if [[ "$tag" == "latest" ]]; then
 		json="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
