@@ -13,20 +13,27 @@
 #
 # Uso:
 #   sudo ./scripts/make-pendrive.sh <imagen.img[.xz]> <dispositivo> \
-#        [--mode files|raw] [--format fat32|exfat] [--yes]
+#        [--mode files|raw] [--format fat32|exfat] [--max-size MB] [--yes]
 #
 # --format BORRA y reformatea el pendrive con una única partición del tipo
 # indicado (úsalo si el pendrive no tiene sistema de ficheros o no te fías).
+#
+# --max-size MB limita la partición a esos MB contados desde el principio
+# (por defecto se usa el disco entero). Sirve para pendrives FALSIFICADOS que
+# dicen tener más capacidad de la real: un "64 GB" que sólo guarda ~10 GB
+# devuelve datos erróneos más allá de su límite real. Con --max-size 8000 todo
+# queda dentro de la zona que sí funciona.
 set -euo pipefail
 
 IMG=""
 DEV=""
 MODE="files"
 FORMAT=""
+MAXSIZE=""
 ASSUME_YES=0
 
 die(){ echo "error: $*" >&2; exit 1; }
-usage(){ sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage(){ sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -36,6 +43,8 @@ while [[ $# -gt 0 ]]; do
 		--mode)                MODE="${2:?}"; shift 2 ;;
 		--format)              FORMAT="${2:?}"; shift 2 ;;
 		--format=*)            FORMAT="${1#--format=}"; shift ;;
+		--max-size)            MAXSIZE="${2:?}"; shift 2 ;;
+		--max-size=*)          MAXSIZE="${1#--max-size=}"; shift ;;
 		--yes|-y)              ASSUME_YES=1; shift ;;
 		-*) die "opción desconocida: $1" ;;
 		*) if [[ -z "$IMG" ]]; then IMG="$1"; elif [[ -z "$DEV" ]]; then DEV="$1"; else die "argumento de sobra: $1"; fi; shift ;;
@@ -49,6 +58,11 @@ done
 IMG="$(cd "$(dirname "$IMG")" && pwd)/$(basename "$IMG")"
 [[ "$MODE" == "files" || "$MODE" == "raw" ]] || die "--mode debe ser files o raw"
 [[ -z "$FORMAT" || "$FORMAT" == "fat32" || "$FORMAT" == "exfat" ]] || die "--format debe ser fat32 o exfat"
+if [[ -n "$MAXSIZE" ]]; then
+	[[ "$MAXSIZE" =~ ^[0-9]+$ && "$MAXSIZE" -ge 512 && "$MAXSIZE" -le 1000000 ]] \
+		|| die "--max-size debe ser un número de MB (512 o más)"
+	[[ -n "$FORMAT" ]] || die "--max-size sólo tiene sentido junto con --format (hay que reparticionar)"
+fi
 
 command -v lsblk >/dev/null || die "falta lsblk (util-linux)"
 
@@ -75,11 +89,13 @@ if [[ -n "$FORMAT" ]]; then
 	echo "==> Desmontando y borrando firmas de $DEV"
 	for p in $(lsblk -nro NAME "$DEV" | tail -n +2); do umount "/dev/$p" 2>/dev/null || true; done
 	wipefs -a "$DEV" >/dev/null
-	echo "==> Creando tabla y partición nueva ($FORMAT)"
+	echo "==> Creando tabla y partición nueva ($FORMAT${MAXSIZE:+  de ${MAXSIZE}MB})"
+	PART_END="100%"
+	[[ -n "$MAXSIZE" ]] && PART_END="${MAXSIZE}MB"
 	if command -v parted >/dev/null 2>&1; then
-		parted -s "$DEV" mklabel msdos mkpart primary 1MiB 100%
+		parted -s "$DEV" mklabel msdos mkpart primary 1MiB "$PART_END"
 	else
-		printf 'label: dos\n1MiB,100%%,L,*\n' | sfdisk "$DEV" >/dev/null
+		printf 'label: dos\n1MiB,%s,L,*\n' "$PART_END" | sfdisk "$DEV" >/dev/null
 	fi
 	partprobe "$DEV" 2>/dev/null || true
 	sleep 1
