@@ -1,0 +1,205 @@
+name: Build K2B V2 Debian (SWT6621S)
+
+# Compila en la nube una imagen Debian (pyavitz/debian-image-builder) para la
+# KICKPI K2B V2 (Allwinner H618 + WiFi/BT Seekwave SWT6621S, kernel 6.12.109),
+# le inyecta el firmware del chip y la deja lista para grabar en un pendrive.
+#
+# Resultado: un asset *.img.xz + *.img.xz.sha256 descargable con curl/wget.
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Placa del builder"
+        required: false
+        default: "kickpik2b-v2"
+      ssid:
+        description: "SSID WiFi que se graba en la imagen"
+        required: false
+        default: "iPhone de Leandro"
+      psk:
+        description: "Clave WiFi"
+        required: false
+        default: "Danae2100"
+      country:
+        description: "Código de país WiFi (ISO)"
+        required: false
+        default: "CL"
+      hostname:
+        description: "Hostname de la placa"
+        required: false
+        default: "kickpi-k2b-v2"
+      login:
+        description: "Usuario a crear"
+        required: false
+        default: "leandro"
+      make_release:
+        description: "Publicar como release (descarga directa)"
+        type: boolean
+        required: false
+        default: true
+      disable_aic8800:
+        description: "Desactivar el driver aic8800 (la K2B V2 no lo lleva; evita fallos de build)"
+        type: boolean
+        required: false
+        default: true
+      release_tag:
+        description: "Tag del release (vacío = automático)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-k2b-v2-debian
+  cancel-in-progress: false
+
+env:
+  BUILDER_UPSTREAM: https://github.com/pyavitz/debian-image-builder.git
+  BUILDER_BRANCH: feature
+  BOARD: ${{ inputs.board }}
+  WIFI_SSID: ${{ inputs.ssid }}
+  WIFI_PSK: ${{ inputs.psk }}
+  WIFI_COUNTRY: ${{ inputs.country }}
+  BOARD_HOSTNAME: ${{ inputs.hostname }}
+  BOARD_LOGIN: ${{ inputs.login }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Checkout del repo
+        uses: actions/checkout@v4
+
+      - name: Liberar espacio en disco
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      /usr/lib/jvm /usr/local/.ghcup /opt/az /usr/share/swift
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Clonar image builder
+        run: |
+          git clone --depth 1 -b "$BUILDER_BRANCH" "$BUILDER_UPSTREAM" builder
+          git -C builder rev-parse HEAD | tee builder-commit.txt
+
+      # La K2B V2 NO usa el chip AIC8800 (ese es un driver extra que el builder
+      # añade para allwinner/rockchip y que falla al compilar sobre 6.12 con
+      # parches 6.13+ de su repositorio). Desactivarlo no afecta a nuestra placa.
+      - name: Desactivar driver aic8800
+        if: ${{ inputs.disable_aic8800 }}
+        working-directory: builder
+        run: |
+          cp lib/function/wireless lib/function/wireless.orig
+          sed -i '/\^(allwinner|rockchip)\$/c\if false; then  # aic8800 deshabilitado (K2B V2 no lleva AIC8800)' \
+            lib/function/wireless
+          diff -u lib/function/wireless.orig lib/function/wireless || true
+          bash -n lib/function/wireless
+          grep -q 'aic8800 deshabilitado' lib/function/wireless
+
+      - name: Dependencias del host
+        working-directory: builder
+        run: |
+          sudo apt-get update
+          make ccompile
+
+      - name: Generar configuración del builder
+        env:
+          USER_LOGIN: ${{ env.BOARD_LOGIN }}
+          USER_PASSWORD: "1321"
+          HOSTNAME: ${{ env.BOARD_HOSTNAME }}
+        run: |
+          ./scripts/gen-builder-config.sh builder
+
+      - name: Descargar y verificar firmware SWT6621S
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/fetch-swt6621s-firmware.sh firmware/swt6621s
+
+      - name: Compilar imagen (uboot + kernel + rootfs + image)
+        working-directory: builder
+        run: make all board="${BOARD}"
+
+      - name: Localizar la imagen generada
+        id: find
+        run: |
+          IMG="$(find builder/output/"${BOARD}"/image -maxdepth 1 -name '*.img' -printf '%T@ %p\n' \
+                 | sort -n | tail -1 | cut -d' ' -f2-)"
+          [ -n "$IMG" ] || { echo "No se encontró la imagen .img"; ls -lR builder/output; exit 1; }
+          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+          ls -lh "$IMG"
+
+      - name: Personalizar imagen (firmware + WiFi + MAC estable)
+        run: |
+          sudo ./scripts/customize-image.sh "${{ steps.find.outputs.img }}" \
+            --firmware-dir firmware/swt6621s \
+            --ssid "$WIFI_SSID" \
+            --psk  "$WIFI_PSK" \
+            --country "$WIFI_COUNTRY" \
+            --hostname "$BOARD_HOSTNAME" \
+            --login "$BOARD_LOGIN"
+
+      - name: Comprimir y calcular SHA256
+        id: pack
+        run: |
+          set -euo pipefail
+          SRC="${{ steps.find.outputs.img }}"
+          OUT="kickpi-k2b-v2-debian-trixie-6.12.109-arm64.img"
+          mkdir -p release
+          cp --sparse=always "$SRC" "release/${OUT}"
+          sync
+          xz -T0 -9 -f "release/${OUT}"
+          ( cd release && sha256sum "${OUT}.xz" > "${OUT}.xz.sha256" )
+          echo "asset=${OUT}.xz" >> "$GITHUB_OUTPUT"
+          ls -lh release
+          cat "release/${OUT}.xz.sha256"
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kickpi-k2b-v2-debian-trixie-6.12.109-arm64
+          path: |
+            release/*.img.xz
+            release/*.img.xz.sha256
+            builder-commit.txt
+          compression-level: 0
+          retention-days: 30
+
+      - name: Publicar release
+        if: ${{ inputs.make_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.release_tag }}"
+          [ -n "$TAG" ] || TAG="k2b-v2-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$TAG" \
+            release/*.img.xz release/*.img.xz.sha256 builder-commit.txt \
+            --title "K2B V2 Debian trixie 6.12.109 (SWT6621S) — $TAG" \
+            --notes "$(cat <<'EOF'
+          Imagen Debian (pyavitz/debian-image-builder) para KICKPI K2B V2
+          (Allwinner H618, WiFi/BT Seekwave SWT6621S), kernel 6.12.109.
+
+          Incluye:
+          - firmware vendor del SWT6621S con los nombres exactos que pide el driver
+          - /boot/credentials.txt con el WiFi configurado (NetworkManager)
+          - WiFi con MAC estable entre reinicios
+          - usuario creado y con sudo que pide contraseña
+
+          Verificar y grabar en un pendrive (no en la SD de la placa):
+
+          ```bash
+          curl -fLO "URL_DEL_ASSET"
+          curl -fLO "URL_DEL_ASSET.sha256"
+          sha256sum -c kickpi-k2b-v2-*.img.xz.sha256
+          xz -dc kickpi-k2b-v2-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+          sync
+          ```
+          EOF
+          )"
+          echo "Release: $(gh release view "$TAG" --json url -q .url)"

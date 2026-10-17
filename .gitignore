@@ -1,0 +1,6 @@
+# Artefactos descargados / generados (no versionar)
+dist/
+firmware/
+*.img
+*.img.xz
+*.img.xz.sha256
