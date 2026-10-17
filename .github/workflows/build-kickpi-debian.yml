@@ -112,7 +112,7 @@ jobs:
         env:
           USER_LOGIN: ${{ env.BOARD_LOGIN }}
           USER_PASSWORD: "1321"
-          HOSTNAME: ${{ env.BOARD_HOSTNAME }}
+          K2B_HOSTNAME: ${{ env.BOARD_HOSTNAME }}
         run: |
           ./scripts/gen-builder-config.sh builder
 

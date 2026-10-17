@@ -34,7 +34,10 @@ PROFILE_REV="${PROFILE_REV:-1.6}"
 USER_NAME="${USER_NAME:-Leandro}"
 USER_LOGIN="${USER_LOGIN:-leandro}"
 USER_PASSWORD="${USER_PASSWORD:-1321}"
-HOSTNAME="${HOSTNAME:-kickpi-k2b-v2}"
+# OJO: 'HOSTNAME' la define bash sola con el nombre del equipo donde corre el
+# script (el portátil / el runner). Por eso el nombre de la placa se pide en
+# K2B_HOSTNAME; así nunca se cuela el hostname de la máquina de compilación.
+HOSTNAME="${K2B_HOSTNAME:-kickpi-k2b-v2}"
 
 # Distribución
 DISTRO="${DISTRO:-debian}"
