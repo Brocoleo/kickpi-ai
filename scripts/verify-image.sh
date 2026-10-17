@@ -49,7 +49,8 @@ chk(){ # <crit|warn> <descripción> <comando...>
 		else printf '  [aviso] %s\n' "$desc"; WARN=$((WARN+1)); fi
 	fi
 }
-size_of(){ stat -c%s "$1" 2>/dev/null || echo 0; }
+size_of(){ stat -Lc%s "$1" 2>/dev/null || echo 0; }   # -L: sigue enlaces simbólicos
+is_link(){ [[ -L "$1" ]]; }
 FW="$MNT/lib/firmware"
 
 echo "==> Imagen: $IMG"
@@ -58,8 +59,11 @@ echo
 echo "--- Firmware SWT6621S en /lib/firmware ---"
 chk crit "SWT6621S_DRAM_SDIO.bin (>100 KB)"        test "$(size_of "$FW/SWT6621S_DRAM_SDIO.bin")" -gt 102400
 chk crit "SWT6621S_IRAM_SDIO.bin (>100 KB)"        test "$(size_of "$FW/SWT6621S_IRAM_SDIO.bin")" -gt 102400
-chk crit "SWT6621S_NV_SDIO.bin es blob real (>100 B, no el stub de 26 B)" test "$(size_of "$FW/SWT6621S_NV_SDIO.bin")" -gt 100
-chk crit "SEEKWAVE_NV_SWT6621S.bin es blob real (>1000 B, no el stub de 28 B)" test "$(size_of "$FW/SEEKWAVE_NV_SWT6621S.bin")" -gt 1000
+chk crit "SWT6621S_NV_SDIO.bin es blob real (>100 B; sigue el enlace si lo hay)" test "$(size_of "$FW/SWT6621S_NV_SDIO.bin")" -gt 100
+chk crit "SEEKWAVE_NV_SWT6621S.bin es blob real (>1000 B; sigue el enlace si lo hay)" test "$(size_of "$FW/SEEKWAVE_NV_SWT6621S.bin")" -gt 1000
+if is_link "$FW/SWT6621S_NV_SDIO.bin" || is_link "$FW/SEEKWAVE_NV_SWT6621S.bin"; then
+	echo "         (el firmware del builder usa enlaces simbólicos; se resuelven bien)"
+fi
 for r in 00000 00001 04000 04001; do
 	chk warn "SWT6621S_SEEKWAVE_R${r}.bin presente" test "$(size_of "$FW/SWT6621S_SEEKWAVE_R${r}.bin")" -gt 1000
 done

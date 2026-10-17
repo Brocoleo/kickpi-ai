@@ -33,21 +33,30 @@ misma REV 2.2) es construir con **`pyavitz/debian-image-builder`** y kernel
 | `scripts/k2b-postinstall.sh` | Se ejecuta EN LA PLACA ya arrancada: actualización, ufw, fail2ban y Docker opcional. |
 | `userpatches/` | Intentos previos con Armbian (obsoletos para esta placa). |
 
-### El detalle que rompía todo
+### El firmware del SWT6621S
 
-El builder instala el firmware del vendedor en `/lib/firmware`, pero deja dos
-nombres que el driver pide como **stubs de texto** (enlaces simbólicos
-aplanados por git):
+El driver del vendedor pide estos nombres en `/lib/firmware` (comprobado en la
+imagen ya construida):
 
-| Lo que el driver pide | Lo que hay en la imagen | Solución |
-|---|---|---|
-| `SWT6621S_NV_SDIO.bin` | fichero de texto `"SWT6621S_NV_SDIO_SHARE.bin"` (26 B) | copia real del blob SHARE (220 B) |
-| `SEEKWAVE_NV_SWT6621S.bin` | fichero de texto `"SWT6621S_SEEKWAVE_R00000.bin"` (28 B) | copia real del R00000 (2372 B) |
-| `sv6160lite.nvbin` | sólo en `seekwave/sv6160lite.kickpi,k3b.nvbin` | copia en la raíz de `/lib/firmware` |
+| Nombre que pide el driver | Qué trae la imagen del builder |
+|---|---|
+| `SWT6621S_IRAM_SDIO.bin` | 356 KB |
+| `SWT6621S_DRAM_SDIO.bin` | 193 KB |
+| `SWT6621S_NV_SDIO.bin` | **enlace** -> `SWT6621S_NV_SDIO_SHARE.bin` (220 B) |
+| `SEEKWAVE_NV_SWT6621S.bin` | **enlace** -> `SWT6621S_SEEKWAVE_R00000.bin` (2,3 KB) |
+| `SWT6621S_SEEKWAVE_R00000/1/4000/4001.bin` | las 4 calibraciones conocidas |
+| `sv6160lite.nvbin` (Bluetooth) | lo copia `customize-image.sh` desde `seekwave/` |
 
-Con esos stubs el driver carga 26 bytes como firmware NV, falla con `-EINVAL`
-y **el `wlan0` nunca aparece**. `customize-image.sh` lo detecta, lo sustituye y
-no toca DRAM/IRAM (los que ya trae la imagen funcionan en esta revisión).
+Los dos enlaces son **válidos** (el destino existe y tiene contenido), así que el
+`request_firmware()` del kernel los resuelve sin problema; por eso
+`verify-image.sh` los mide siguiendo el enlace (`stat -L`).
+
+Aun así `customize-image.sh` repasa cada nombre y, si se encontrara un fichero
+diminuto de texto (lo que pasa cuando el firmware se descarga *suelto* desde la
+web en vez de clonarlo con git: los enlaces llegan aplanados), lo sustituye por
+el blob real del respaldo verificado. Es una red de seguridad: en esta imagen no
+hace falta tocar nada. DRAM/IRAM se dejan como vienen, que son las que funcionan
+en esta revisión.
 
 ## Fases
 

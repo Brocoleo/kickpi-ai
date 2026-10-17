@@ -3,15 +3,15 @@
 # para la KICKPI K2B V2 (Allwinner H618 + WiFi/BT Seekwave SWT6621S).
 #
 # Qué hace (montando la partición raíz de la imagen por loop, offline):
-#   1. Arregla el firmware del SWT6621S en /lib/firmware. El builder YA instala
-#      los blobs del vendedor (pyavitz/armbian-firmware), pero deja dos ficheros
-#      que el driver pide con nombre propio como "stubs" de texto de 26/28 bytes
-#      (un enlace simbólico aplanado por git):
-#         SWT6621S_NV_SDIO.bin        -> "SWT6621S_NV_SDIO_SHARE.bin"
-#         SEEKWAVE_NV_SWT6621S.bin    -> "SWT6621S_SEEKWAVE_R00000.bin"
-#      El driver los carga como firmware NV y falla (-EINVAL), con lo que el
-#      wlan0 nunca aparece. Aquí se sustituyen por copias reales del blob
-#      (receta verificada en la misma revisión de placa, V2.2).
+#   1. Comprueba el firmware del SWT6621S en /lib/firmware. El builder YA instala
+#      los blobs del vendedor (pyavitz/armbian-firmware) y los dos nombres que el
+#      driver pide con nombre propio suelen llegar como enlaces simbólicos bien
+#      formados:
+#         SWT6621S_NV_SDIO.bin        -> SWT6621S_NV_SDIO_SHARE.bin
+#         SEEKWAVE_NV_SWT6621S.bin    -> SWT6621S_SEEKWAVE_R00000.bin
+#      Si en su lugar apareciera un "stub" de texto de 26/28 bytes (el enlace
+#      aplanado al descargar el firmware suelto en vez de clonarlo), se sustituye
+#      por una copia real del blob para que request_firmware() no falle.
 #      También copia sv6160lite.nvbin (Bluetooth) desde seekwave/*.kickpi,k3b.nvbin.
 #      NO se tocan DRAM/IRAM salvo --replace-dram-iram.
 #   2. Deja /boot/credentials.txt para que la placa se una al WiFi en el
@@ -108,8 +108,10 @@ FW="$MNT/lib/firmware"
 [[ -d "$FW" ]] || die "$ROOTPART no parece una raíz Debian ($FW ausente)"
 
 # --------------------------------------------------------------- firmware fix
-# Un "stub" es un enlace simbólico aplanado por git: un fichero diminuto cuyo
-# contenido es el nombre de otro fichero del mismo directorio.
+# Un "stub" es un enlace simbólico aplanado al descargar el firmware suelto
+# (en vez de clonarlo con git): un fichero diminuto cuyo contenido es el nombre
+# de otro fichero del mismo directorio. En la imagen del builder los enlaces
+# llegan bien, así que normalmente aquí sólo se comprueba que todo resuelva.
 is_stub(){
 	local f="$1" sz content
 	[[ -f "$f" ]] || return 1
