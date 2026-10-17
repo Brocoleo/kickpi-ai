@@ -18,9 +18,9 @@ on:
         required: false
         default: "iPhone de Leandro"
       psk:
-        description: "Clave WiFi"
+        description: "Clave WiFi (vacío = usa el secret WIFI_PSK del repo)"
         required: false
-        default: "Danae2100"
+        default: ""
       country:
         description: "Código de país WiFi (ISO)"
         required: false
@@ -60,7 +60,6 @@ env:
   BUILDER_BRANCH: feature
   BOARD: ${{ inputs.board }}
   WIFI_SSID: ${{ inputs.ssid }}
-  WIFI_PSK: ${{ inputs.psk }}
   WIFI_COUNTRY: ${{ inputs.country }}
   BOARD_HOSTNAME: ${{ inputs.hostname }}
   BOARD_LOGIN: ${{ inputs.login }}
@@ -72,6 +71,19 @@ jobs:
     steps:
       - name: Checkout del repo
         uses: actions/checkout@v4
+
+      # La clave del WiFi no se guarda en el YAML (el repo es público): vive en
+      # el secret WIFI_PSK del repo, o se pasa como input al lanzar el workflow.
+      - name: Comprobar credenciales WiFi
+        env:
+          WIFI_PSK: ${{ inputs.psk != '' && inputs.psk || secrets.WIFI_PSK }}
+        run: |
+          if [ -z "${WIFI_SSID:-}" ] || [ -z "${WIFI_PSK:-}" ]; then
+            echo "::error::Faltan credenciales WiFi. Define el secret WIFI_PSK"
+            echo "(Settings -> Secrets and variables -> Actions) o pasa 'psk' al lanzar el workflow."
+            exit 1
+          fi
+          echo "SSID='$WIFI_SSID' (clave presente, ${#WIFI_PSK} caracteres)"
 
       - name: Liberar espacio en disco
         run: |
@@ -135,6 +147,8 @@ jobs:
           ls -lh "$IMG"
 
       - name: Personalizar imagen (firmware + WiFi + MAC estable)
+        env:
+          WIFI_PSK: ${{ inputs.psk != '' && inputs.psk || secrets.WIFI_PSK }}
         run: |
           sudo ./scripts/customize-image.sh "${{ steps.find.outputs.img }}" \
             --firmware-dir firmware/swt6621s \

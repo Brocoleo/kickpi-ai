@@ -30,6 +30,7 @@ misma REV 2.2) es construir con **`pyavitz/debian-image-builder`** y kernel
 | `scripts/verify-image.sh` | Comprueba la imagen (firmware, módulos, red, arranque) antes de grabarla. |
 | `scripts/make-pendrive.sh` | Prepara el pendrive (modo `files` con instalador, o `raw` arrancable). |
 | `scripts/k2b-emmc-install.sh` | Se ejecuta EN LA PLACA: clona la imagen al eMMC y verifica. |
+| `scripts/k2b-postinstall.sh` | Se ejecuta EN LA PLACA ya arrancada: actualización, ufw, fail2ban y Docker opcional. |
 | `userpatches/` | Intentos previos con Armbian (obsoletos para esta placa). |
 
 ### El detalle que rompía todo
@@ -56,14 +57,21 @@ no toca DRAM/IRAM (los que ya trae la imagen funcionan en esta revisión).
 - **F3** — build en la nube (GitHub Actions) + descarga verificada del `.img.xz`.
 - **F4** — grabar el pendrive y, desde la placa, `dd` a la eMMC (`/dev/mmcblk2`).
 - **F5** — arrancar desde eMMC (sin SD) y comprobar WiFi/SSH.
+- **F6** — puesta a punto por SSH (actualización, cortafuegos, fail2ban, Docker).
 
 ## Uso
 
 ### 1) Compilar en la nube
 
 GitHub → **Actions** → `Build K2B V2 Debian (SWT6621S)` → **Run workflow**.
-Deja los valores por defecto (el SSID/clave y el usuario ya están en el YAML).
 Tarda ~40-60 min y publica un *release* con `*.img.xz` + `*.img.xz.sha256`.
+
+> **Clave del WiFi.** El repo es público, así que la clave **no** se guarda en el
+> YAML: define el secret `WIFI_PSK` en *Settings → Secrets and variables →
+> Actions* (o escríbela en el campo `psk` al lanzar el workflow, que no se
+> guarda). Si falta, el workflow se detiene en el primer paso en vez de
+> construir una imagen sin WiFi. El SSID (`iPhone de Leandro`) sí está por
+> defecto y no es secreto.
 
 ### 2) Descargar y verificar (en cualquier PC)
 
@@ -114,6 +122,17 @@ leyendo de vuelta** el SHA256. Después: `sudo poweroff`, quitar el pendrive y
 La raíz se amplía sola a los 32 GB del eMMC y se une al WiFi (por
 `/boot/credentials.txt`). Se conecta con `ssh leandro@<ip>`
 (la IP aparece en los dispositivos del hotspot).
+
+### 7) Puesta a punto (fase 6, por SSH)
+
+```bash
+scp scripts/k2b-postinstall.sh leandro@<ip>:~
+ssh leandro@<ip> 'sudo bash k2b-postinstall.sh --docker'
+```
+
+Comprueba el estado (raíz en la eMMC, `wlan0` con IP, Internet), fija hora y
+hostname, actualiza el sistema, activa `ufw` (solo permite SSH), instala
+`fail2ban` y, con `--docker`, Docker + compose. Es idempotente.
 
 ## Datos del sistema final
 
