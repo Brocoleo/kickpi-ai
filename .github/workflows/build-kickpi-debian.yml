@@ -144,6 +144,12 @@ jobs:
             --hostname "$BOARD_HOSTNAME" \
             --login "$BOARD_LOGIN"
 
+      - name: Verificar la imagen personalizada
+        run: |
+          sudo ./scripts/verify-image.sh "${{ steps.find.outputs.img }}" \
+            --login "$BOARD_LOGIN" \
+            --hostname "$BOARD_HOSTNAME"
+
       - name: Comprimir y calcular SHA256
         id: pack
         run: |

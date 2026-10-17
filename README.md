@@ -26,7 +26,26 @@ misma REV 2.2) es construir con **`pyavitz/debian-image-builder`** y kernel
 | `scripts/gen-builder-config.sh` | Genera la configuración no-interactiva del builder (usuario, hostname, red, TZ...). |
 | `scripts/fetch-swt6621s-firmware.sh` | Descarga y verifica (SHA256) el firmware del vendedor como respaldo. |
 | `scripts/customize-image.sh` | Mónta la imagen y arregla el firmware + WiFi + MAC estable + sudo. |
+| `scripts/download-image.sh` | Descarga el `.img.xz` del release y verifica su SHA256. |
+| `scripts/make-pendrive.sh` | Prepara el pendrive (modo `files` con instalador, o `raw` arrancable). |
+| `scripts/k2b-emmc-install.sh` | Se ejecuta EN LA PLACA: clona la imagen al eMMC y verifica. |
 | `userpatches/` | Intentos previos con Armbian (obsoletos para esta placa). |
+
+### El detalle que rompía todo
+
+El builder instala el firmware del vendedor en `/lib/firmware`, pero deja dos
+nombres que el driver pide como **stubs de texto** (enlaces simbólicos
+aplanados por git):
+
+| Lo que el driver pide | Lo que hay en la imagen | Solución |
+|---|---|---|
+| `SWT6621S_NV_SDIO.bin` | fichero de texto `"SWT6621S_NV_SDIO_SHARE.bin"` (26 B) | copia real del blob SHARE (220 B) |
+| `SEEKWAVE_NV_SWT6621S.bin` | fichero de texto `"SWT6621S_SEEKWAVE_R00000.bin"` (28 B) | copia real del R00000 (2372 B) |
+| `sv6160lite.nvbin` | sólo en `seekwave/sv6160lite.kickpi,k3b.nvbin` | copia en la raíz de `/lib/firmware` |
+
+Con esos stubs el driver carga 26 bytes como firmware NV, falla con `-EINVAL`
+y **el `wlan0` nunca aparece**. `customize-image.sh` lo detecta, lo sustituye y
+no toca DRAM/IRAM (los que ya trae la imagen funcionan en esta revisión).
 
 ## Fases
 
@@ -39,20 +58,51 @@ misma REV 2.2) es construir con **`pyavitz/debian-image-builder`** y kernel
 
 ## Uso
 
+### 1) Compilar en la nube
+
+GitHub → **Actions** → `Build K2B V2 Debian (SWT6621S)` → **Run workflow**.
+Deja los valores por defecto (el SSID/clave y el usuario ya están en el YAML).
+Tarda ~40-60 min y publica un *release* con `*.img.xz` + `*.img.xz.sha256`.
+
+### 2) Descargar y verificar (en cualquier PC)
+
 ```bash
-# 1) Compilar en la nube: Actions -> "Build K2B V2 Debian (SWT6621S)" -> Run workflow
-#    (deja todos los valores por defecto; SSID/clave ya vienen grabados)
-
-# 2) En cualquier PC: descargar el release y verificar SHA256
-./scripts/download-image.sh "<url-del-.img.xz>"
-
-# 3) Grabar el pendrive (se pide confirmación explícita escribiendo el dispositivo)
-./scripts/make-pendrive.sh dist/<imagen>.img.xz /dev/sdX
-
-# 4) En la placa, desde el sistema actual: instalar en la eMMC
-sudo ./k2b-emmc-install.sh /media/usb/<imagen>.img.xz
-#    apagar, quitar el pendrive Y la SD, y arrancar: ya corre desde eMMC.
+./scripts/download-image.sh latest              # o la URL del asset
 ```
+
+Verifica el SHA256 antes de seguir; si no coincide, aborta.
+
+### 3) Preparar el pendrive
+
+```bash
+# Recomendado: deja la imagen + instalador + LEEME en el pendrive (FAT32/exFAT)
+sudo ./scripts/make-pendrive.sh dist/<imagen>.img.xz /dev/sdX
+# Si el pendrive no tiene sistema de ficheros (se BORRA todo):
+sudo ./scripts/make-pendrive.sh dist/<imagen>.img.xz /dev/sdX --format fat32
+```
+
+Pide escribir el nombre del dispositivo para confirmar, y verifica el checksum
+de la copia. En el pendrive queda un `LEEME.txt` con los pasos exactos.
+
+### 4) Instalar en la eMMC (en la placa, con monitor + teclado)
+
+```bash
+lsblk                                  # localiza el pendrive (p.ej. /dev/sda1)
+sudo mkdir -p /mnt/usb && sudo mount /dev/sda1 /mnt/usb
+cd /mnt/usb && sha256sum -c <imagen>.img.sha256
+sudo bash /mnt/usb/k2b-emmc-install.sh /mnt/usb/<imagen>.img
+```
+
+El instalador comprueba que el destino no es el disco del sistema, desmonta sus
+particiones, pide confirmación (`SI`), escribe con `dd conv=fsync` y **verifica
+leyendo de vuelta** el SHA256. Después: `sudo poweroff`, quitar el pendrive y
+**la SD**, y encender.
+
+### 5) Primer arranque desde la eMMC
+
+La raíz se amplía sola a los 32 GB del eMMC y se une al WiFi (por
+`/boot/credentials.txt`). Se conecta con `ssh leandro@<ip>`
+(la IP aparece en los dispositivos del hotspot).
 
 ## Datos del sistema final
 
