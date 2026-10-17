@@ -98,6 +98,11 @@ fi
 # ------------------------------------------------------------------ utilidades
 uncompressed_bytes(){
 	if [[ "$IMG" == *.xz ]]; then
+		# xz guarda el tamaño sin comprimir en el índice: leerlo es instantáneo
+		# (descomprimir la imagen entera sólo para medirla tardaría minutos).
+		local n
+		n="$(xz -l --robot "$IMG" 2>/dev/null | awk '/^totals/{print $5}')"
+		if [[ -n "$n" && "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]]; then echo "$n"; return; fi
 		xz -dc "$IMG" | wc -c
 	else
 		stat -c%s "$IMG"
@@ -140,7 +145,11 @@ if [[ "$MODE" == "files" ]]; then
 		|| die "la copia no coincide con la imagen; NO la uses"
 
 	SRCDIR="$(cd "$(dirname "$0")" && pwd)"
-	[[ -f "$SRCDIR/k2b-emmc-install.sh" ]] && install -m 0755 "$SRCDIR/k2b-emmc-install.sh" "$MNT/"
+	if [[ -f "$SRCDIR/k2b-emmc-install.sh" ]]; then
+		install -m 0755 "$SRCDIR/k2b-emmc-install.sh" "$MNT/"
+	else
+		die "no encuentro k2b-emmc-install.sh junto a make-pendrive.sh ($SRCDIR)"
+	fi
 	cat > "$MNT/LEEME.txt" <<EOF
 Instalación de la imagen en la eMMC de la KICKPI K2B V2
 =======================================================
