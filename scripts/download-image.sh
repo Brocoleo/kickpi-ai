@@ -3,8 +3,13 @@
 #
 # Uso:
 #   ./scripts/download-image.sh "<url-completa-del-.img.xz>"
-#   ./scripts/download-image.sh latest          # último release del repo
+#   ./scripts/download-image.sh latest          # último release con imagen K2B
 #   ./scripts/download-image.sh k2b-v2-20261017 # release por tag
+#
+# Solo acepta assets cuyo nombre contenga MATCH (por defecto kickpi-k2b-v2):
+# en el repo hay releases antiguos (p. ej. la imagen Armbian que NO sirve para
+# esta placa) y así nunca se cuela uno de ellos por error. Con MATCH="" se
+# acepta cualquier *.img.xz.
 #
 # Deja los ficheros en ./dist/ y comprueba el checksum contra el .sha256
 # publicado junto a la imagen.
@@ -12,6 +17,8 @@ set -euo pipefail
 
 REPO="${REPO:-Brocoleo/kickpi-ai}"
 DEST="${DEST:-dist}"
+MATCH="${MATCH-kickpi-k2b-v2}"
+EXCLUDE="${EXCLUDE-armbian}"
 ARG="${1:-}"
 
 die(){ echo "error: $*" >&2; exit 1; }
@@ -48,14 +55,43 @@ resolve_asset(){
 	printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); [print(a["browser_download_url"]) for a in d.get("assets",[])]'
 }
 
+list_tags(){
+	# tags de los releases, del más nuevo al más viejo
+	if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+		gh release list --repo "$REPO" --limit 50 --json tagName,createdAt \
+			--template '{{range .}}{{.createdAt}} {{.tagName}}{{"\n"}}{{end}}' 2>/dev/null \
+			| sort -r | awk '{print $2}'
+		return
+	fi
+	curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=50" \
+		| python3 -c 'import json,sys; [print(r["tag_name"]) for r in json.load(sys.stdin)]' 2>/dev/null
+}
+
+pick_img(){
+	# imprime la primera URL de un *.img.xz que cumpla MATCH (y no EXCLUDE)
+	local urls="$1" u
+	while IFS= read -r u; do
+		[[ -n "$u" ]] || continue
+		[[ -n "$EXCLUDE" && "${u,,}" == *"$EXCLUDE"* ]] && continue
+		[[ -n "$MATCH" && "$u" != *"$MATCH"* ]] && continue
+		printf '%s\n' "$u"; return 0
+	done < <(printf '%s\n' "$urls" | grep -E '\.img\.xz$' || true)
+	return 1
+}
+
 if [[ "$ARG" =~ ^https?:// ]]; then
 	IMG_URL="$ARG"
 else
 	echo "==> Buscando release '$ARG' en $REPO"
-	ASSETS="$(resolve_asset "$ARG")"
-	[[ -n "$ASSETS" ]] || die "no se pudieron listar los assets del release '$ARG'"
-	IMG_URL="$(printf '%s\n' "$ASSETS" | grep -E '\.img\.xz$' | head -1)"
-	[[ -n "$IMG_URL" ]] || die "el release no tiene ningún asset *.img.xz"
+	IMG_URL=""
+	for cand in $( [[ "$ARG" == "latest" ]] && list_tags || echo "$ARG" ); do
+		echo "    revisando '$cand'..."
+		ASSETS="$(resolve_asset "$cand" || true)"
+		[[ -n "$ASSETS" ]] || continue
+		IMG_URL="$(pick_img "$ASSETS" || true)"
+		[[ -n "$IMG_URL" ]] && break
+	done
+	[[ -n "$IMG_URL" ]] || die "no hay ningún release con un asset *.img.xz${MATCH:+ que contenga '$MATCH'}"
 fi
 
 NAME="$(basename "${IMG_URL%%\?*}")"
