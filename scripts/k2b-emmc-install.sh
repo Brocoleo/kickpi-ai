@@ -120,6 +120,14 @@ case "$SRC_KIND" in
 esac
 sync
 
+# Tras escribir aparece la tabla de particiones nueva del eMMC; si el sistema
+# monta alguna de esas particiones, los bytes cambiarían durante la
+# verificación. Desmontamos cualquier partición del destino antes de leerla.
+mapfile -t PARTS_NEW < <(lsblk -nro NAME "$TARGET" | tail -n +2)
+for p in "${PARTS_NEW[@]}"; do
+	umount "/dev/$p" 2>/dev/null || umount -l "/dev/$p" 2>/dev/null || true
+done
+
 # --------------------------------------------------------------- verificación
 echo "==> Verificando (leer de vuelta el eMMC, puede tardar un poco)..."
 case "$SRC_KIND" in
