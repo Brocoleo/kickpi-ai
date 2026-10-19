@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit(id DESC);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          TEXT PRIMARY KEY,   -- SHA-256 del token de sesión
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 """
 
 

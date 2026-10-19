@@ -63,6 +63,11 @@ services:
       JARVIS_LLM_API_KEY: ${JARVIS_LLM_API_KEY:-}
       JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       JARVIS_LLM_FALLBACK_MODELS: "${JARVIS_LLM_FALLBACK_MODELS:-minimax/minimax-m3.1-flash:free,google/gemma-4-26b-a4b-it:free,openrouter/free}"
+      # Sesiones de navegador (PWA). Si el hash está vacío, el login acepta
+      # el propio JARVIS_API_TOKEN.
+      JARVIS_ADMIN_PASSWORD_HASH: ${JARVIS_ADMIN_PASSWORD_HASH:-}
+      JARVIS_SESSION_TTL_DAYS: ${JARVIS_SESSION_TTL_DAYS:-30}
+      JARVIS_COOKIE_SECURE: ${JARVIS_COOKIE_SECURE:-true}
     volumes:
       - jarvis_data:/data
     ports:

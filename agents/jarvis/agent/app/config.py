@@ -10,6 +10,15 @@ class Settings(BaseSettings):
     # --- API pública del agente ---
     api_token: str = ""
 
+    # --- Sesiones de navegador (PWA) ---
+    # Hash scrypt de la contraseña de administrador. Si está vacío, el login
+    # acepta el propio JARVIS_API_TOKEN. Generar con: python -m app.security
+    admin_password_hash: str = ""
+    session_ttl_days: int = 30
+    cookie_name: str = "jarvis_session"
+    cookie_secure: bool = True
+    static_dir: str = "/app/static"
+
     # --- LLM compatible con OpenAI (OpenRouter, OpenAI, Groq...) ---
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_api_key: str = ""

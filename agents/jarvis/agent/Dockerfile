@@ -10,6 +10,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+# PWA compilada (se genera con `npm run build` en ./pwa antes del build).
+COPY static ./static
 
 # Directorio de datos por si no hay volumen montado (pruebas locales)
 RUN mkdir -p /data

@@ -14,3 +14,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# PWA compilada (se genera en cada build; no se versiona)
+agent/static/
+pwa/node_modules/
+pwa/dist/

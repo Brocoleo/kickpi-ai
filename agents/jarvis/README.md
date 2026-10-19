@@ -1,37 +1,39 @@
-# Jarvis Agent v0.1
+# Jarvis v0.2
 
-Cerebro del asistente: **FastAPI + LangGraph + SQLite**, con inferencia en la
-nube (OpenRouter / OpenAI / cualquier API compatible). Solo **herramientas de
-lectura**; no puede reiniciar, crear, borrar ni modificar nada.
+Asistente privado para la **KICKPI K2B V2**: cerebro con **FastAPI + LangGraph +
+SQLite**, PWA mobile-first para iPhone y herramientas de **solo lectura** sobre
+el servidor. Inferencia en la nube (OpenRouter / cualquier API compatible).
 
 ## Arquitectura
 
 ```
-    iPhone / MacBook
-          │  (Tailscale + token de API)
-          ▼
-   ┌─────────────────┐        HTTP interno        ┌──────────────────┐
-   │  jarvis-agent   │ ─────────────────────────► │  jarvis-tools    │
-   │  FastAPI        │      X-Tools-Token         │  FastAPI         │
-   │  LangGraph      │                            │  psutil + docker │
-   │  SQLite         │                            └────────┬─────────┘
-   └────────┬────────┘                                     │
-            │ HTTPS                                        │ /var/run/docker.sock
-            ▼                                              ▼
-   OpenRouter / Google AI                             Docker (SOLO lectura)
+   iPhone (PWA instalada)
+        │  HTTPS, mismo origen
+        ▼
+   Tailscale Serve :8888
+        │
+   ┌─────────────────┐   HTTP interno   ┌──────────────────┐
+   │  jarvis-agent   │ ───────────────► │  jarvis-tools    │
+   │  FastAPI + PWA  │  X-Tools-Token   │  psutil + docker │
+   │  LangGraph      │                  └────────┬─────────┘
+   │  SQLite         │                           │
+   └────────┬────────┘                           │ /var/run/docker.sock
+            │ HTTPS                              ▼
+            ▼                             Docker (SOLO lectura)
+     OpenRouter / LLM
 ```
 
 - **jarvis-agent** no ve Docker ni el sistema: solo habla con `jarvis-tools`.
 - **jarvis-tools** es el único con el socket de Docker y solo expone `GET`.
+- La **PWA se sirve desde el propio agente** (`/`), así que la API (`/api/*`) y
+  la interfaz comparten origen: **cero CORS** y una sola superficie expuesta.
 
 ## Servicios y puertos
 
 | Servicio | Puerto | Exposición |
 |---|---|---|
-| `jarvis-agent` | 8888 | `127.0.0.1:8888` (solo local) |
+| `jarvis-agent` | 8888 | `127.0.0.1:8888` → Tailscale Serve HTTPS |
 | `jarvis-tools` | 8000 | interna en la red `jarvis` (no publicada) |
-
-El agente **no** se publica a la tailnet hasta validar seguridad y pruebas.
 
 ## Puesta en marcha
 
@@ -39,13 +41,69 @@ El agente **no** se publica a la tailnet hasta validar seguridad y pruebas.
 cd agents/jarvis
 cp .env.example .env
 
-# Genera dos tokens distintos
+# Dos tokens distintos
 openssl rand -hex 32   # -> JARVIS_API_TOKEN
 openssl rand -hex 32   # -> JARVIS_TOOLS_TOKEN
 
-# Edita .env y añade tu clave del LLM (JARVIS_LLM_API_KEY)
+# Clave del LLM (gratuita, p. ej. OpenRouter :free)
+#   JARVIS_LLM_API_KEY=...
+
+# 1) Compila la PWA dentro de la imagen del agente
+cd pwa && npm install && npm run build && cd ..
+#    (genera agent/static/)
+
+# 2) Levanta los servicios
 sudo docker compose up -d --build
+
+# 3) Expón el agente SOLO a la tailnet
+sudo tailscale serve --bg --https=8888 http://localhost:8888
+
+# 4) Define tu contraseña de navegador (interactiva, no pasa por el chat)
+./set-admin-password.sh
 ```
+
+URL de la PWA: `https://kickpi-jarvis.tail1e3b4d.ts.net:8888/`
+
+Desarrollo de la interfaz con recarga en caliente:
+
+```bash
+cd pwa && npm run dev
+# Vite hace proxy de /api y /health a http://localhost:8888
+```
+
+## Autenticación
+
+Dos vías deliberadamente separadas:
+
+1. **Navegador (PWA)**: `POST /api/auth/login` con la contraseña → cookie de
+   sesión `HttpOnly`, `Secure`, `SameSite=Strict`, 30 días. El token **nunca**
+   se guarda en `localStorage` ni es accesible desde JavaScript.
+2. **API (scripts/automatización)**: `X-API-Token` o `Authorization: Bearer`.
+
+Detalles:
+
+- Las sesiones se guardan en SQLite como **SHA-256 del identificador**, no el
+  token en claro. Caducan y se purgan en cada login.
+- La contraseña se almacena como hash **scrypt** (`scrypt:n:r:p:salt:hash`).
+  Si `JARVIS_ADMIN_PASSWORD_HASH` está vacío, el login acepta el
+  `JARVIS_API_TOKEN` (útil para la primera prueba).
+- **Fail-closed**: sin token ni contraseña configurados, los endpoints
+  protegidos responden `503`.
+- Limitador de intentos: 10 fallos / 15 min.
+- No se confía en `X-Forwarded-For` para autorizar.
+- Cabeceras: CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`.
+
+## PWA (iPhone)
+
+Cuatro secciones: **Chat**, **Métricas**, **Archivos**, **Ajustes**.
+
+- Chat con memoria persistente, chips de herramientas y modelo usado.
+- Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
+  contenedores; refresco cada 10 s.
+- Archivos enlaza a FileBrowser y Portainer (cada uno con su propio login).
+- Ajustes muestra la cadena de modelos, el circuit breaker y cierra sesión.
+- Instalación: Safari → Compartir → **Añadir a pantalla de inicio**.
+- Service worker: precachea solo los assets; **la API nunca se cachea**.
 
 ## Herramientas disponibles (solo lectura)
 
@@ -58,8 +116,7 @@ sudo docker compose up -d --build
 
 ## Fallback de modelos (disponibilidad sin coste)
 
-El agente mantiene una **cadena de modelos**: `JARVIS_LLM_MODEL` y luego
-`JARVIS_LLM_FALLBACK_MODELS` (separados por comas). Política:
+Cadena: `JARVIS_LLM_MODEL` + `JARVIS_LLM_FALLBACK_MODELS` (separados por comas).
 
 | Situación | Comportamiento |
 |---|---|
@@ -70,59 +127,57 @@ El agente mantiene una **cadena de modelos**: `JARVIS_LLM_MODEL` y luego
 | Respuesta válida | Se mantiene y se devuelve ese modelo |
 | Todos fallan | `LLMError` controlado con resumen |
 
-**Circuit breaker:** tras 2 fallos consecutivos, un modelo queda en
-enfriamiento 60 s y se salta. Al terminar, se permite un intento de prueba.
-Si *todos* están abiertos, se fuerza el primero para no quedarnos sin servicio.
+**Circuit breaker:** tras 2 fallos consecutivos, un modelo queda en enfriamiento
+60 s. Si *todos* están abiertos, se fuerza el primero para no quedarnos sin
+servicio.
 
-**Sin acciones duplicadas:** el fallback solo repite la llamada al modelo.
-Los mensajes y las `tool_calls` no se reenvían; las herramientas se ejecutan
-una única vez en el nodo `tools` del grafo.
+**Sin acciones duplicadas:** el fallback solo repite la llamada al modelo; las
+`tool_calls` no se reenvían y las herramientas se ejecutan una única vez.
 
-**Límites de los `:free`:** OpenRouter aplica ~20 req/min y un tope diario
-según la cuenta. Verificar disponibilidad con:
-
-```bash
-curl -s https://openrouter.ai/api/v1/models | python3 -c "import sys,json; [print(m['id']) for m in json.load(sys.stdin)['data'] if float(m['pricing']['prompt'])==0 and 'tools' in (m.get('supported_parameters') or [])]"
-```
-
-Modelos gratuitos verificados con tool calling: `nvidia/nemotron-3-super-120b-a12b:free`,
-`minimax/minimax-m3.1-flash:free`, `google/gemma-4-26b-a4b-it:free`, `openrouter/free`.
+**Límites de los `:free`:** OpenRouter aplica ~20 req/min y un tope diario según
+la cuenta. Modelos gratuitos verificados con tool calling:
+`nvidia/nemotron-3-super-120b-a12b:free`, `minimax/minimax-m3.1-flash:free`,
+`google/gemma-4-26b-a4b-it:free`, `openrouter/free`.
 
 ## API
 
-Todas las rutas salvo `/health` exigen `X-API-Token: <JARVIS_API_TOKEN>`
-(o `Authorization: Bearer <token>`).
+Salvo `/health`, todas las rutas viven bajo `/api` y aceptan **cookie de sesión**
+o **token de API**.
 
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/health` | Estado (sin auth) |
-| POST | `/chat` | `{"message": "...", "conversation_id": "..."}` |
-| GET | `/conversations` | Lista de conversaciones |
-| GET | `/conversations/{id}` | Mensajes de una conversación |
-| GET | `/tools` | Herramientas permitidas |
-| GET | `/llm/status` | Cadena de modelos y estado del circuit breaker |
-| GET | `/audit` | Auditoría de llamadas a herramientas |
+| POST | `/api/auth/login` | `{"password": "..."}` → cookie de sesión |
+| POST | `/api/auth/logout` | Invalida la sesión |
+| GET | `/api/auth/me` | Estado de autenticación |
+| POST | `/api/chat` | `{"message": "...", "conversation_id": "..."}` |
+| GET | `/api/conversations` | Lista de conversaciones |
+| GET | `/api/conversations/{id}` | Mensajes de una conversación |
+| GET | `/api/tools` | Herramientas permitidas |
+| POST | `/api/tools/{name}` | Invoca una herramienta (widgets) |
+| GET | `/api/llm/status` | Cadena de modelos y circuit breaker |
+| GET | `/api/audit` | Auditoría de llamadas a herramientas |
 
-## Criterios de aceptación (Fase 3)
+## Criterios de aceptación (v0.2)
 
-| Prueba | Resultado esperado | Cómo |
-|---|---|---|
-| `/health` | 200 | `curl -s localhost:8888/health` |
-| Sin token | 401 | `curl -s -o /dev/null -w '%{http_code}' localhost:8888/chat -X POST -d '{}'` |
-| Chat con LLM | Respuesta válida | `POST /chat` con token |
-| `system_stats` | CPU y RAM reales | vía chat o `GET /docker`… |
-| `docker_ps` | Contenedores reales | vía chat |
-| `container_logs` | Logs acotados y sin secretos | vía chat |
-| Reinicio del agente | Memoria SQLite conservada | `docker compose restart jarvis-agent` + `GET /conversations/{id}` |
-| Acceso remoto | Deshabilitado hasta validar | puerto solo en 127.0.0.1 |
+| Prueba | Resultado esperado |
+|---|---|
+| `/health` | 200 y `pwa: true` |
+| `/` | `index.html` de la PWA |
+| `POST /api/chat` sin sesión | 401 |
+| Login correcto | Cookie `Secure` + `HttpOnly` y `/api/auth/me` autenticado |
+| Login incorrecto | 401 |
+| Logout | La sesión deja de valer (401) |
+| Chat con LLM | Respuesta válida + `tool_trace` |
+| Métricas | CPU/RAM/temperatura y 4 contenedores reales |
+| Reinicio del agente | Historial SQLite conservado |
+| Tailscale Serve | Solo accesible desde la tailnet |
 
 ## Endurecimiento (siguiente iteración)
 
-1. **Socket de Docker**: un bind-mount de unix socket no se puede hacer
-   *read-only* de verdad. La mitigación actual es que `jarvis-tools` solo
-   implementa operaciones de lectura. Paso siguiente: interponer
-   `tecnativa/docker-socket-proxy` (que sí rechaza cualquier método no-GET).
-2. **Aislamiento del contenedor de tools**: `read_only`, `cap_drop: [ALL]`,
-   usuario sin privilegios en cuanto el proxy sustituya al socket directo.
-3. **Rate limiting** y rotación de tokens.
+1. **Socket de Docker**: interponer `tecnativa/docker-socket-proxy` (rechaza
+   cualquier método no-GET) y retirar el montaje directo.
+2. **Contenedor de tools**: `read_only`, `cap_drop: [ALL]`, usuario sin
+   privilegios.
+3. **Rotación de tokens** y revocación de sesiones desde Ajustes.
 4. **Notificaciones Telegram** (opcional) para alertas del agente.
