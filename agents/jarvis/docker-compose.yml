@@ -2,10 +2,12 @@
 # Jarvis Stack — Single compose for everything
 # ----------------------------------------------------------------------------
 # Services:
-#   jarvis-tools    → only holder of Docker socket (read-only GETs)
-#   jarvis-agent    → brain (FastAPI + LangGraph + SQLite), no Docker socket
-#   portainer       → Docker management UI (moved off EOL image later)
-#   filebrowser     → NAS file browser (root = /mnt/data/nas/files)
+#   docker-socket-proxy → ACLs sobre la API Docker. Único mount de docker.sock
+#                         (junto a portainer, que necesita la API completa).
+#   jarvis-tools        → solo lectura, via el proxy. NO ve docker.sock.
+#   jarvis-agent        → cerebro (FastAPI + LangGraph + SQLite), no Docker socket
+#   portainer           → Docker management UI (moved off EOL image later)
+#   filebrowser         → NAS file browser (root = /mnt/data/nas/files)
 #
 # All persistent data lives under /mnt/data (the external 698 GB disk).
 # Exposed via Tailscale Serve (host-level), not Docker ports.
@@ -13,20 +15,47 @@
 name: jarvis
 
 services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    # Config propia con ACLs por endpoint exacto. La de la imagen usa
+    # CONTAINERS=1 (match de prefijo) y permite GET /containers/{id}/json,
+    # que devuelve Config.Env con los secretos de los otros contenedores.
+    command: ["haproxy", "-f", "/usr/local/etc/haproxy/jarvis-haproxy.cfg"]
+    environment:
+      # haproxy no acepta "error" como nivel syslog: los validos son
+      # emerg/alert/crit/err/warning/notice/info/debug.
+      LOG_LEVEL: err
+      SOCKET_PATH: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./deploy/docker-socket-proxy/haproxy.cfg:/usr/local/etc/haproxy/jarvis-haproxy.cfg:ro
+    networks:
+      - dsp
+    security_opt:
+      - no-new-privileges:true
+
   jarvis-tools:
     build: ./tools
     image: jarvis-tools:0.1
     container_name: jarvis-tools
     restart: unless-stopped
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
     environment:
       JARVIS_TOOLS_TOKEN: ${JARVIS_TOOLS_TOKEN:?define JARVIS_TOOLS_TOKEN en .env}
+      # Se habla con el proxy, no con el socket. El proxy filtra por ACL.
+      JARVIS_DOCKER_HOST: tcp://docker-socket-proxy:2375
+      JARVIS_DOCKER_API_VERSION: "1.45"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - /proc/device-tree/model:/etc/board-model:ro
     expose:
       - "8000"
     networks:
       - jarvis
+      - dsp
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -105,5 +134,10 @@ services:
 networks:
   jarvis:
     driver: bridge
+  # Red interna dedicada al proxy: sin salida a internet y sin acceso desde
+  # fuera del compose. Solo la comparten el proxy y jarvis-tools.
+  dsp:
+    driver: bridge
+    internal: true
 
 # No named volumes — everything is bind-mounted to /mnt/data
