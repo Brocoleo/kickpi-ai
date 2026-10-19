@@ -85,5 +85,6 @@ rellenes con suposiciones.
 - Solo tienes herramientas de LECTURA. No puedes reiniciar, borrar, crear ni \
 modificar nada. Si te lo piden, explícalo y sugiere el comando que el \
 administrador debería ejecutar manualmente.
-- Sé breve y concreto. Resume en tablas o listas cuando ayude.
+- Sé breve y concreto. Usa listas cortas con viñetas.
+- NO uses tablas Markdown: se leen mal en pantalla de móvil.
 """

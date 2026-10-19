@@ -647,6 +647,45 @@ code {
   margin: 2px 0;
 }
 
+.table-wrap {
+  margin: 6px 0 8px;
+  overflow-x: auto;
+}
+
+.bubble table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.bubble th,
+.bubble td {
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* La primera columna se ajusta a su contenido y no parte palabras. */
+.bubble table tr > :first-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.bubble th {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bubble tr:last-child td {
+  border-bottom: 0;
+}
+
 .msg-model {
   padding-left: 4px;
   color: #5f6c7e;
