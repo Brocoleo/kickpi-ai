@@ -1,15 +1,14 @@
 # ============================================================================
-# Jarvis Agent v0.1 — FastAPI + LangGraph + SQLite, LLM en la nube
+# Jarvis Stack — Single compose for everything
 # ----------------------------------------------------------------------------
-# Dos servicios deliberadamente separados:
+# Services:
+#   jarvis-tools    → only holder of Docker socket (read-only GETs)
+#   jarvis-agent    → brain (FastAPI + LangGraph + SQLite), no Docker socket
+#   portainer       → Docker management UI (moved off EOL image later)
+#   filebrowser     → NAS file browser (root = /mnt/data/nas/files)
 #
-#   jarvis-agent  → cerebro. NO ve el socket de Docker.
-#   jarvis-tools  → único con acceso a Docker, y solo expone operaciones de
-#                   LECTURA explícitamente permitidas. Sin POST/PUT/DELETE.
-#
-# El puerto 8888 se publica SOLO en 127.0.0.1 (no accesible desde la red).
-# Para exponerlo a la tailnet, usar más adelante:
-#   sudo tailscale serve --bg --https=8888 http://localhost:8888
+# All persistent data lives under /mnt/data (the external 698 GB disk).
+# Exposed via Tailscale Serve (host-level), not Docker ports.
 # ============================================================================
 name: jarvis
 
@@ -22,13 +21,7 @@ services:
     environment:
       JARVIS_TOOLS_TOKEN: ${JARVIS_TOOLS_TOKEN:?define JARVIS_TOOLS_TOKEN en .env}
     volumes:
-      # NOTA: un socket bind-mount no se puede hacer "read-only" de verdad
-      # (es un unix socket). La protección real es que ESTE servicio solo
-      # implementa operaciones de lectura. Ver README → "Endurecimiento".
       - /var/run/docker.sock:/var/run/docker.sock
-      # El modelo de la placa (ARM) vive en el device-tree, que no se ve
-      # dentro del contenedor. Lo montamos en una ruta normal (bind sobre
-      # /proc/... no funciona en procfs).
       - /proc/device-tree/model:/etc/board-model:ro
     expose:
       - "8000"
@@ -37,11 +30,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8000/health\",timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -63,34 +52,58 @@ services:
       JARVIS_LLM_API_KEY: ${JARVIS_LLM_API_KEY:-}
       JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       JARVIS_LLM_FALLBACK_MODELS: "${JARVIS_LLM_FALLBACK_MODELS:-minimax/minimax-m3.1-flash:free,google/gemma-4-26b-a4b-it:free,openrouter/free}"
-      # Sesiones de navegador (PWA). Si el hash está vacío, el login acepta
-      # el propio JARVIS_API_TOKEN.
       JARVIS_ADMIN_PASSWORD_HASH: ${JARVIS_ADMIN_PASSWORD_HASH:-}
       JARVIS_SESSION_TTL_DAYS: ${JARVIS_SESSION_TTL_DAYS:-30}
       JARVIS_COOKIE_SECURE: ${JARVIS_COOKIE_SECURE:-true}
     volumes:
-      - jarvis_data:/data
+      - /mnt/data/docker/jarvis_data:/data
     ports:
-      # Solo localhost. Nada de 0.0.0.0 hasta validar la seguridad.
       - "127.0.0.1:8888:8000"
     networks:
       - jarvis
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8000/health\",timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
 
+  portainer:
+    image: portainer/portainer-ce:lts
+    container_name: portainer
+    restart: unless-stopped
+    command: -H unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/data/docker/portainer:/data
+    expose:
+      - "9443"
+    networks:
+      - jarvis
+    security_opt:
+      - no-new-privileges:true
+
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    restart: unless-stopped
+    environment:
+      FB_BASEURL: /files
+    volumes:
+      - /mnt/data/docker/filebrowser/cfg:/config
+      - /mnt/data/docker/filebrowser/db:/database
+      - /mnt/data/nas/files:/srv
+    expose:
+      - "8080"
+    networks:
+      - jarvis
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   jarvis:
     driver: bridge
 
-volumes:
-  jarvis_data:
+# No named volumes — everything is bind-mounted to /mnt/data
