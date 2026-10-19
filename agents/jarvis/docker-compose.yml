@@ -1,0 +1,91 @@
+# ============================================================================
+# Jarvis Agent v0.1 — FastAPI + LangGraph + SQLite, LLM en la nube
+# ----------------------------------------------------------------------------
+# Dos servicios deliberadamente separados:
+#
+#   jarvis-agent  → cerebro. NO ve el socket de Docker.
+#   jarvis-tools  → único con acceso a Docker, y solo expone operaciones de
+#                   LECTURA explícitamente permitidas. Sin POST/PUT/DELETE.
+#
+# El puerto 8888 se publica SOLO en 127.0.0.1 (no accesible desde la red).
+# Para exponerlo a la tailnet, usar más adelante:
+#   sudo tailscale serve --bg --https=8888 http://localhost:8888
+# ============================================================================
+name: jarvis
+
+services:
+  jarvis-tools:
+    build: ./tools
+    image: jarvis-tools:0.1
+    container_name: jarvis-tools
+    restart: unless-stopped
+    environment:
+      JARVIS_TOOLS_TOKEN: ${JARVIS_TOOLS_TOKEN:?define JARVIS_TOOLS_TOKEN en .env}
+    volumes:
+      # NOTA: un socket bind-mount no se puede hacer "read-only" de verdad
+      # (es un unix socket). La protección real es que ESTE servicio solo
+      # implementa operaciones de lectura. Ver README → "Endurecimiento".
+      - /var/run/docker.sock:/var/run/docker.sock
+      # El modelo de la placa (ARM) vive en el device-tree, que no se ve
+      # dentro del contenedor. Lo montamos en una ruta normal (bind sobre
+      # /proc/... no funciona en procfs).
+      - /proc/device-tree/model:/etc/board-model:ro
+    expose:
+      - "8000"
+    networks:
+      - jarvis
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  jarvis-agent:
+    build: ./agent
+    image: jarvis-agent:0.1
+    container_name: jarvis-agent
+    restart: unless-stopped
+    depends_on:
+      jarvis-tools:
+        condition: service_healthy
+    environment:
+      JARVIS_API_TOKEN: ${JARVIS_API_TOKEN:?define JARVIS_API_TOKEN en .env}
+      JARVIS_TOOLS_TOKEN: ${JARVIS_TOOLS_TOKEN:?define JARVIS_TOOLS_TOKEN en .env}
+      JARVIS_TOOLS_URL: http://jarvis-tools:8000
+      JARVIS_LLM_BASE_URL: ${JARVIS_LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      JARVIS_LLM_API_KEY: ${JARVIS_LLM_API_KEY:-}
+      JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      JARVIS_LLM_FALLBACK_MODELS: "${JARVIS_LLM_FALLBACK_MODELS:-minimax/minimax-m3.1-flash:free,google/gemma-4-26b-a4b-it:free,openrouter/free}"
+    volumes:
+      - jarvis_data:/data
+    ports:
+      # Solo localhost. Nada de 0.0.0.0 hasta validar la seguridad.
+      - "127.0.0.1:8888:8000"
+    networks:
+      - jarvis
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  jarvis:
+    driver: bridge
+
+volumes:
+  jarvis_data:

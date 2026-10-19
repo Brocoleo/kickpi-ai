@@ -1,0 +1,6 @@
+fastapi>=0.115,<0.116
+uvicorn>=0.34,<0.35
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+docker>=7.1,<8
+psutil>=6.1,<7

@@ -1,0 +1,16 @@
+# Secretos: nunca versionar
+.env
+*.env
+!.env.example
+
+# Datos locales de pruebas
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
