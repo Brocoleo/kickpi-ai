@@ -81,6 +81,14 @@ def main() -> None:
         if "\n" in token or "\x00" in token:
             die("caracteres no permitidos en un argumento")
 
+    # git (>= 2.35.2) rechaza repos propiedad de otro usuario con
+    # "dubious ownership". El usuario jarvis solo LEE, asi que se declara
+    # seguro el acceso: el wrapper ya limita las rutas autorizadas.
+    if program == "git":
+        os.environ["GIT_CONFIG_COUNT"] = "1"
+        os.environ["GIT_CONFIG_KEY_0"] = "safe.directory"
+        os.environ["GIT_CONFIG_VALUE_0"] = "*"
+
     sys.stderr.write(f"jarvis-ssh-wrapper: permitido -> {original}\n")
     os.execvp(argv[0], argv)
 

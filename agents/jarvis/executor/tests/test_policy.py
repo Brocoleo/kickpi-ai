@@ -199,10 +199,24 @@ async def test_int_param_not_int_denied(registry, roots):
     assert "entero" in d.reason
 
 
-async def test_project_allowed(registry):
+async def test_project_allowed(registry, roots):
+    """El proyecto se ejecuta en SU directorio (env -C), no en el home."""
+    allowed, _ = roots
     d = await check(registry, "testhost", "project_op", {"project_id": "proj_ok"})
     assert d.allowed
-    assert d.argv == ["echo", "tests"]
+    # `env -C <dir> <cmd...>`: sin shell, y con el cwd en la raiz del proyecto.
+    assert d.argv[:2] == ["env", "-C"]
+    assert d.argv[2] == str(allowed / "repo")
+    assert d.argv[3:] == ["echo", "tests"]
+
+
+async def test_project_command_has_no_shell(registry, roots):
+    """El comando del proyecto no debe poder interpretarse como shell."""
+    allowed, _ = roots
+    d = await check(registry, "testhost", "project_op", {"project_id": "proj_ok"})
+    assert d.allowed
+    assert "sh" not in d.argv
+    assert "-c" not in d.argv
 
 
 async def test_project_unknown_denied(registry):

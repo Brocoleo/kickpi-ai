@@ -60,7 +60,7 @@ operations:
     description: "Rama y ficheros modificados de un repositorio autorizado."
     risk: read
     auto: true
-    command: ["git", "-C", "{path}", "status", "--porcelain=v1", "--branch"]
+    command: ["git", "--no-optional-locks", "-C", "{path}", "status", "--porcelain=v1", "--branch"]
     path_param: path
     timeout: 30
 
@@ -69,7 +69,7 @@ operations:
     description: "Ultimos commits de un repositorio autorizado."
     risk: read
     auto: true
-    command: ["git", "-C", "{path}", "log", "-n", "{count}", "--oneline"]
+    command: ["git", "--no-optional-locks", "-C", "{path}", "log", "-n", "{count}", "--oneline"]
     path_param: path
     int_param: count
     int_param_max: 30
