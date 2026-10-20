@@ -1,4 +1,6 @@
 import type {
+  Approval,
+  Approvals,
   AuthMe,
   ChatResponse,
   Containers,
@@ -45,11 +47,28 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Peticion que cambia estado.
+ *
+ * Exige la sesion humana (cookie HttpOnly) y el token CSRF ligado a esa
+ * sesion. El token viaja en una cabecera y vive SOLO en memoria: nunca se
+ * guarda en localStorage ni en sessionStorage.
+ */
+function mutate<T>(path: string, body?: unknown, csrfToken?: string | null): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  return request<T>(path, {
+    method: "POST",
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers,
+  });
+}
+
 export const api = {
   me: () => request<AuthMe>("/auth/me"),
 
   login: (password: string) =>
-    request<{ ok: boolean; expires_days: number }>("/auth/login", {
+    request<{ ok: boolean; expires_days: number; csrf_token?: string }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ password }),
     }),
@@ -74,6 +93,43 @@ export const api = {
   llmStatus: () => request<LlmStatus>("/llm/status"),
 
   equipos: () => request<Equipos>("/equipos"),
+
+  /* --- Aprobaciones humanas (Fase C) --------------------------------------
+   * Superficie separada de las herramientas del LLM: el backend exige
+   * sesion humana + Origin + token CSRF, y el navegador nunca ve el token
+   * del ejecutor.
+   * ---------------------------------------------------------------------- */
+  approvals: (status?: string, limit = 50) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    params.set("limit", String(limit));
+    return request<Approvals>(`/aprobaciones?${params.toString()}`);
+  },
+
+  approval: (id: string) =>
+    request<{ approval: Approval }>(`/aprobaciones/${encodeURIComponent(id)}`),
+
+  approve: (id: string, csrfToken: string | null) =>
+    mutate<{ approval: Approval }>(`/aprobaciones/${encodeURIComponent(id)}/aprobar`, undefined, csrfToken),
+
+  reject: (id: string, csrfToken: string | null, reason = "") =>
+    mutate<{ approval: Approval }>(
+      `/aprobaciones/${encodeURIComponent(id)}/rechazar`,
+      { reason },
+      csrfToken,
+    ),
+
+  execute: (id: string, csrfToken: string | null) =>
+    mutate<{
+      ok: boolean;
+      state: string;
+      approval_id: string;
+      exit_code: number | null;
+      stdout: string;
+      stderr: string | null;
+      duration_ms: number | null;
+      error: string | null;
+    }>(`/aprobaciones/${encodeURIComponent(id)}/ejecutar`, undefined, csrfToken),
 
   conversation: (id: string) =>
     request<{ conversation_id: string; messages: StoredMessage[] }>(

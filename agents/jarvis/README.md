@@ -133,15 +133,47 @@ Detalles:
 
 ## PWA (iPhone)
 
-Cuatro secciones: **Chat**, **Métricas**, **Archivos**, **Ajustes**.
+Seis secciones: **Chat**, **Métricas**, **Equipos**, **Archivos**,
+**Aprobaciones**, **Ajustes**.
 
 - Chat con memoria persistente, chips de herramientas y modelo usado.
 - Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
   contenedores; refresco cada 10 s.
+- Equipos muestra el estado de los equipos remotos y la actividad auditada.
 - Archivos enlaza a FileBrowser y Portainer (cada uno con su propio login).
+- **Aprobaciones**: consulta, aprueba y rechaza las solicitudes que Jarvis
+  necesita (ver *Fase C*). Refresco cada 10 s y al volver a enfocar;
+  confirmación en dos pasos; cuenta atrás por solicitud; historial con
+  estado, `exit code` y duración. Badge con el número de pendientes.
 - Ajustes muestra la cadena de modelos, el circuit breaker y cierra sesión.
 - Instalación: Safari → Compartir → **Añadir a pantalla de inicio**.
 - Service worker: precachea solo los assets; **la API nunca se cachea**.
+
+### Aprobaciones humanas (Fase C)
+
+Flujo completo, con las fronteras de confianza bien separadas:
+
+```
+LLM ──▶ /exec (ejecutor, token del ejecutor)
+          └─▶ Policy Engine: valida y NO ejecuta
+              └─▶ solicitud PENDING (requested_by="agente")
+
+PWA ──▶ /api/aprobaciones (agente: sesión humana + Origin + CSRF)
+          ├─▶ aprobar  → el AGENTE pone approved_by (identidad de la sesión)
+          └─▶ ejecutar → el EJECUTOR revalida, reclama (un solo uso) y ejecuta
+```
+
+- El **token CSRF** viaja en la cabecera `X-CSRF-Token`, es un HMAC ligado a
+  la sesión y **solo vive en memoria** en el navegador: nunca en
+  `localStorage` ni en una cookie legible por JavaScript.
+- El **token del ejecutor** y el **de aprobaciones** no salen nunca del
+  backend: el navegador solo habla con el agente.
+- El LLM **no puede** aprobar, rechazar ni ejecutar: sus rutas exigen el
+  token de aprobaciones, que el agente solo usa como proxy autenticado.
+- `approved_by` lo deriva el **servidor** de la sesión; el navegador no puede
+  enviarlo (se rechaza con 422).
+- Una solicitud `failed` significa *resultado incierto*: **no se reintenta**.
+- Una solicitud `consumed` ya se ejecutó: se informa, no se repite.
 
 ## Herramientas disponibles (solo lectura)
 
@@ -185,9 +217,9 @@ o **token de API**.
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/health` | Estado (sin auth) |
-| POST | `/api/auth/login` | `{"password": "..."}` → cookie de sesión |
+| POST | `/api/auth/login` | `{"password": "..."}` → cookie de sesión + token CSRF |
 | POST | `/api/auth/logout` | Invalida la sesión |
-| GET | `/api/auth/me` | Estado de autenticación |
+| GET | `/api/auth/me` | Estado de autenticación (+ token CSRF si hay sesión) |
 | POST | `/api/chat` | `{"message": "...", "conversation_id": "..."}` |
 | GET | `/api/conversations` | Lista de conversaciones |
 | GET | `/api/conversations/{id}` | Mensajes de una conversación |
@@ -195,6 +227,18 @@ o **token de API**.
 | POST | `/api/tools/{name}` | Invoca una herramienta (widgets) |
 | GET | `/api/llm/status` | Cadena de modelos y circuit breaker |
 | GET | `/api/audit` | Auditoría de llamadas a herramientas |
+| GET | `/api/equipos` | Equipos registrados y actividad |
+
+Rutas de aprobación (Fase C). Exigen **sesión de navegador** (el token de API
+no basta) y, si cambian estado, además `Origin` estricto y `X-CSRF-Token`:
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/aprobaciones` | Solicitudes (filtro `?status=` y `?host=`) |
+| GET | `/api/aprobaciones/{id}` | Detalle de una solicitud |
+| POST | `/api/aprobaciones/{id}/aprobar` | Aprueba (la identidad la pone la sesión) |
+| POST | `/api/aprobaciones/{id}/rechazar` | Rechaza (`{"reason": "..."}`) |
+| POST | `/api/aprobaciones/{id}/ejecutar` | Ejecuta lo ya aprobado (sin cuerpo) |
 
 ## Criterios de aceptación (v0.2)
 
@@ -294,7 +338,14 @@ Una operación solo se ejecuta si se cumplen **todas** estas reglas:
 
 ### Pruebas
 
-`executor/tests/` — 31 pruebas (`docker build --target test`):
+| Suite | Comando | Cobertura |
+|---|---|---|
+| Ejecutor | `cd executor && python3 -m pytest` | 87 pruebas: denegaciones, rutas, ejecución, SSH, aprobaciones (C1), operación con aprobación y flujo completo con git real (C3) |
+| Agente | `cd agent && python3 -m pytest` | 54 pruebas: CSRF, Origin, sesión humana, proxy de aprobaciones (C2), catálogo cerrado (C3) |
+| PWA | `cd pwa && npm test` | 37 pruebas: lógica de aprobaciones y componente (Vitest + Testing Library) |
+| PWA E2E | `cd pwa && npm run test:e2e` | 6 pruebas a 390×844 (Playwright, backend simulado) |
+
+Detalle de la cobertura del ejecutor:
 
 - denegaciones: operación inexistente, host deshabilitado, operación no
   auto-aprobable, host no aplicable, proyecto de otro host, sin suite de tests
@@ -302,16 +353,22 @@ Una operación solo se ejecuta si se cumplen **todas** estas reglas:
 - ejecución: comando inexistente, exit != 0, timeout, inyección de shell
   (`echo "a; id"` llega literal), **orden ejecutada una sola vez**
 - SSH: host inalcanzable, sin `known_hosts`, sin clave, sin dirección
+- aprobaciones: un solo uso, reclamo atómico, expiración, fila alterada,
+  LLM sin capacidad de aprobar, `approval_id` rechazado con 422
 
 ### Pendiente
 
 - **PC Xeon (Linux Mint)**: no aparece en la tailnet. El registro lo tiene
   como `desktop` **deshabilitado** hasta que se configure su dirección real.
-- **Aprobación humana**: implementada en código (C1 en el ejecutor, C2 como
-  proxy autenticado en el agente, C3 con la operación de demostración
-  `host_git_diff_stat`) pero **sin desplegar**: faltan el token de
-  aprobaciones en el `.env` del board, reconstruir los contenedores y la
-  pestaña «Aprobaciones» de la PWA (C4).
+- **Aprobación humana**: implementada y probada (C1 ejecutor, C2 proxy
+  autenticado del agente, C3 operación de demostración `host_git_diff_stat`,
+  C4 pestaña «Aprobaciones» de la PWA) pero **sin desplegar**: faltan el
+  token de aprobaciones en el `.env` del board, reconstruir los contenedores
+  y compilar la PWA.
+- **Safari real**: la PWA se ha verificado en Chromium a 390×844; WebKit no
+  arranca en este equipo (faltan librerías del sistema que requieren sudo).
+  El código evita los patrones problemáticos en Safari (`dvh`, safe-area,
+  prefijos `-webkit-`).
 - **Segunda ubicación de respaldos**: hoy `/mnt/data/nas/backups` está en el
   mismo disco HGST que los datos: protege de errores lógicos, no de la
   fallo del disco.

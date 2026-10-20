@@ -4,6 +4,11 @@ export type AuthMe = {
   password_configured: boolean;
   session_ttl_days: number;
   version: string;
+  /** Token CSRF ligado a esta sesion. Vive SOLO en memoria: nunca en
+   *  localStorage ni en una cookie legible por JavaScript. */
+  csrf_token?: string | null;
+  /** Identidad humana de la sesion (quien aprueba). */
+  user?: string | null;
 };
 
 export type ToolTrace = {
@@ -125,5 +130,49 @@ export type Ejecucion = {
 export type Equipos = {
   hosts: Equipo[];
   executions: Ejecucion[];
+  count: number;
+};
+
+/* --- Aprobaciones humanas (Fase C) -------------------------------------- */
+
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "executing"
+  | "consumed"
+  | "failed";
+
+export type Approval = {
+  id: string;
+  created_at: string;
+  /** Quien la solicita: siempre el agente. */
+  requested_by: string;
+  /** Quien la aprueba: una persona autenticada. */
+  approved_by: string | null;
+  host: string;
+  project_id: string | null;
+  operation: string;
+  params: Record<string, unknown>;
+  /** argv NORMALIZADO: lo que se ejecutara si se aprueba. */
+  argv: string[];
+  resolved_path: string | null;
+  timeout_s: number | null;
+  request_hash: string;
+  decision_hash: string;
+  risk: string | null;
+  risk_description: string | null;
+  expires_at: string;
+  status: ApprovalStatus;
+  decided_at: string | null;
+  executed_at: string | null;
+  exit_code: number | null;
+  duration_ms: number | null;
+  result_error: string | null;
+};
+
+export type Approvals = {
+  approvals: Approval[];
   count: number;
 };

@@ -125,6 +125,40 @@ export function ShieldIcon(props: IconProps) {
   );
 }
 
+/** Escudo concheckmark: la marca de "aprobaciones humanas". */
+export function ShieldCheckIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 2.8 19 5.6v6.1c0 4.6-3 7.7-7 9.5-4-1.8-7-4.9-7-9.5V5.6Z" />
+      <path d="m8.8 11.8 2.2 2.3 4.2-4.4" />
+    </Base>
+  );
+}
+
+export function CheckIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="m4.5 12.5 5 5 10-11" />
+    </Base>
+  );
+}
+
+export function XIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </Base>
+  );
+}
+
+export function ChevronIcon({ open, ...props }: IconProps & { open: boolean }) {
+  return (
+    <Base {...props}>
+      <path d={open ? "m6 14 6-6 6 6" : "m6 10 6 6 6-6"} />
+    </Base>
+  );
+}
+
 export function DeviceIcon(props: IconProps) {
   return (
     <Base {...props}>
