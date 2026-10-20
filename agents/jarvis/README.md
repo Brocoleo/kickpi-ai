@@ -340,10 +340,11 @@ Una operación solo se ejecuta si se cumplen **todas** estas reglas:
 
 | Suite | Comando | Cobertura |
 |---|---|---|
-| Ejecutor | `cd executor && python3 -m pytest` | 87 pruebas: denegaciones, rutas, ejecución, SSH, aprobaciones (C1), operación con aprobación y flujo completo con git real (C3) |
-| Agente | `cd agent && python3 -m pytest` | 54 pruebas: CSRF, Origin, sesión humana, proxy de aprobaciones (C2), catálogo cerrado (C3) |
-| PWA | `cd pwa && npm test` | 37 pruebas: lógica de aprobaciones y componente (Vitest + Testing Library) |
+| Ejecutor | `cd executor && python3 -m pytest` | 93 pruebas: denegaciones, rutas, ejecución, SSH, aprobaciones (C1), operación con aprobación y flujo con git real (C3), integridad y estado incierto (C5) |
+| Agente | `cd agent && python3 -m pytest` | 66 pruebas: CSRF, Origin, sesión humana, proxy de aprobaciones (C2), catálogo cerrado (C3), auditoría de seguridad (C5) |
+| PWA | `cd pwa && npm test` | 41 pruebas: lógica de aprobaciones, componente y resultado incierto (Vitest + Testing Library) |
 | PWA E2E | `cd pwa && npm run test:e2e` | 6 pruebas a 390×844 (Playwright, backend simulado) |
+| Integrada | `scripts/prueba-integrada-fase-c.sh` | PWA real → agente → ejecutor → ejecución → auditoría, en entorno aislado |
 
 Detalle de la cobertura del ejecutor:
 
@@ -355,6 +356,24 @@ Detalle de la cobertura del ejecutor:
 - SSH: host inalcanzable, sin `known_hosts`, sin clave, sin dirección
 - aprobaciones: un solo uso, reclamo atómico, expiración, fila alterada,
   LLM sin capacidad de aprobar, `approval_id` rechazado con 422
+
+### Estado del stack (auditoría C5, 2026-10-20)
+
+**El stack de Jarvis está CAÍDO** y el despliegue de la Fase C tiene un
+bloqueante previo:
+
+| Comprobación | Resultado |
+|---|---|
+| `systemctl is-active docker` | `inactive` (pero `enabled`) |
+| `/mnt/data` (disco externo de 698 GB) | **sin montar** (sí está en `fstab`) |
+| `GET /health` del agente | sin respuesta (ni en loopback ni por la tailnet) |
+
+Con el disco sin montar, Docker crearía volúmenes **vacíos** en la eMMC: el
+ejecutor se quedaría sin su clave SSH dedicada (que solo vive en ese disco)
+y se perdería la auditoría. El procedimiento completo, con copia de
+seguridad verificable, rotación de sudo, tokens, rebuild, health checks, E2E,
+validación de auditoría y rollback, está en
+[`docs/DESPLIEGUE-C.md`](docs/DESPLIEGUE-C.md).
 
 ### Pendiente
 

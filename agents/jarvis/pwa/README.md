@@ -32,3 +32,7 @@ Decisiones clave:
   `consumed` ya se ejecutó y no se repite.
 - Historial con estado, `exit code`, duración y la salida de la ejecución
   (truncada, con opción de expandir).
+- **Resultado incierto**: si se pierde la respuesta del servidor, la app
+  consulta el estado persistido (es una lectura) y **no reintenta la
+  ejecución**. Un error de red se informa como error de red, nunca como
+  "la ejecución falló".

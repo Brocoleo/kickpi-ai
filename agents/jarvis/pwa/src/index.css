@@ -74,6 +74,8 @@ code {
 .app {
   display: flex;
   flex-direction: column;
+  /* Fallback para Safari < 16.4 (no entiende dvh). */
+  height: 100vh;
   height: 100dvh;
   position: relative;
   isolation: isolate;
@@ -370,6 +372,8 @@ code {
 /* ------------------------------------------------------------------ login */
 .login {
   position: relative;
+  /* Fallback para Safari < 16.4 (no entiende dvh). */
+  min-height: 100vh;
   min-height: 100dvh;
   display: grid;
   place-items: center;
@@ -1187,6 +1191,8 @@ code {
   align-items: center;
   justify-content: center;
   gap: 18px;
+  /* Fallback para Safari < 16.4 (no entiende dvh). */
+  height: 100vh;
   height: 100dvh;
   background: var(--bg);
 }
@@ -1702,6 +1708,10 @@ code {
 
 .approval-uncertain {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   padding: 9px 11px;
   border-radius: 10px;
   border: 1px solid rgba(248, 113, 113, 0.3);
@@ -1709,6 +1719,10 @@ code {
   color: #fecaca;
   font-size: 12.5px;
   line-height: 1.45;
+}
+
+.approval-uncertain-text {
+  margin: 0;
 }
 
 .approval-consumed {
@@ -1767,6 +1781,8 @@ code {
 .modal {
   width: 100%;
   max-width: 520px;
+  /* Fallback para Safari < 16.4 (no entiende dvh). */
+  max-height: calc(100vh - 24px);
   max-height: calc(100dvh - 24px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;

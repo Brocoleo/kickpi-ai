@@ -6,6 +6,7 @@ import type { Approval } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   approvals: vi.fn(),
+  approval: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   execute: vi.fn(),
@@ -326,6 +327,7 @@ describe("errores", () => {
 
   it("un fallo de red se informa como problema de conexion", async () => {
     apiMock.approve.mockRejectedValue(new TypeError("Failed to fetch"));
+    apiMock.approval.mockRejectedValue(new TypeError("Failed to fetch"));
     renderTab();
     await waitFor(() => expect(screen.getByText("host_git_diff_stat")).toBeInTheDocument());
 
@@ -335,6 +337,89 @@ describe("errores", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(/conexion|contactar/),
     );
+  });
+});
+
+describe("resultado incierto (respuesta perdida)", () => {
+  it("consulta el estado persistido y NO reintenta la ejecución", async () => {
+    // El servidor ejecutó, pero la respuesta se perdió.
+    apiMock.execute.mockRejectedValue(new TypeError("Failed to fetch"));
+    apiMock.approval.mockResolvedValue({
+      approval: makeApproval({ status: "consumed", exit_code: 0, duration_ms: 42 }),
+    });
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText("host_git_diff_stat")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Aprobar y ejecutar/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar y ejecutar" }));
+
+    // Se consulta el estado real (una lectura), y no se vuelve a ejecutar.
+    await waitFor(() => expect(apiMock.approval).toHaveBeenCalledWith("abc123"));
+    expect(apiMock.execute).toHaveBeenCalledTimes(1);
+    // Y la tarjeta refleja el estado que dice el servidor.
+    await waitFor(() => expect(screen.getByText("ejecutada")).toBeInTheDocument());
+  });
+
+  it("si tampoco se puede consultar, avisa y bloquea la acción", async () => {
+    apiMock.execute.mockRejectedValue(new TypeError("Failed to fetch"));
+    apiMock.approval.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText("host_git_diff_stat")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Aprobar y ejecutar/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar y ejecutar" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/No se pudo confirmar el resultado/)).toBeInTheDocument(),
+    );
+    // No se ofrece volver a aprobar ni ejecutar: el estado es incierto.
+    expect(screen.queryByRole("button", { name: /^Aprobar y ejecutar/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Rechazar/ })).toBeNull();
+    // Pero sí se puede consultar el estado a mano.
+    expect(
+      screen.getByRole("button", { name: "Consultar estado" }),
+    ).toBeInTheDocument();
+  });
+
+  it("un error de red NO se presenta como una ejecución fallida", async () => {
+    apiMock.execute.mockRejectedValue(new TypeError("Failed to fetch"));
+    apiMock.approval.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText("host_git_diff_stat")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Aprobar y ejecutar/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar y ejecutar" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    const text = screen.getByRole("alert").textContent ?? "";
+    expect(text).toMatch(/no se ha podido confirmar|no se pudo contactar/i);
+    expect(text).not.toMatch(/falló la ejecución|ejecución fallida/i);
+  });
+
+  it("consultar estado a mano actualiza la tarjeta", async () => {
+    apiMock.execute.mockRejectedValue(new TypeError("Failed to fetch"));
+    apiMock.approval.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    renderTab();
+    await waitFor(() => expect(screen.getByText("host_git_diff_stat")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Aprobar y ejecutar/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar y ejecutar" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Consultar estado" })).toBeInTheDocument(),
+    );
+
+    // Ahora el servidor responde: el estado real es "ejecutando".
+    apiMock.approval.mockResolvedValue({
+      approval: makeApproval({ status: "executing" }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar estado" }));
+
+    await waitFor(() => expect(screen.getByText("ejecutando")).toBeInTheDocument());
+    expect(apiMock.execute).toHaveBeenCalledTimes(1);
   });
 });
 

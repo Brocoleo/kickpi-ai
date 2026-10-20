@@ -84,23 +84,25 @@ def require_human_session(request: Request) -> str:
     A diferencia de `require_auth`, el token de API **no** sirve aquí: las
     decisiones de aprobación son humanas, y el LLM (o un script) no puede
     tomar esa decisión por su cuenta aunque conozca el token de la API.
+
+    Se comprueba la SESIÓN directamente (no vía `auth_method`): si una
+    petición llega con cookie de sesión **y** token de API, la sesión manda
+    y la petición se acepta. Nunca al revés: el token de API, solo, no
+    abre estas puertas.
     """
     settings = get_settings()
-    method = auth_method(request)
-    if method is None:
+    if auth_method(request) is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "No autenticado: se requiere una sesión de navegador",
         )
-    if method != "session":
+
+    fingerprint = session_fingerprint_of(request)
+    if not fingerprint or not sessions.valid(fingerprint):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Esta operación exige una sesión de navegador; el token de API no basta",
         )
-
-    fingerprint = session_fingerprint_of(request)
-    if not fingerprint:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesión no válida")
 
     subject = sessions.subject(fingerprint) or settings.admin_user
     return subject

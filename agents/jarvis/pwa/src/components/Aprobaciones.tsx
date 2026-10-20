@@ -59,18 +59,22 @@ function ApprovalCard({
   busy,
   result,
   expanded,
+  uncertainMessage,
   onApprove,
   onReject,
   onToggleExpand,
+  onReconcile,
 }: {
   approval: Approval;
   now: number;
   busy: boolean;
   result: ActionResult | null;
   expanded: boolean;
+  uncertainMessage?: string;
   onApprove: () => void;
   onReject: () => void;
   onToggleExpand: () => void;
+  onReconcile: () => void;
 }) {
   const meta = statusMeta(approval.status);
   const left = secondsLeft(approval.expires_at, now);
@@ -163,6 +167,20 @@ function ApprovalCard({
         </div>
       )}
 
+      {uncertainMessage && (
+        <div className="approval-uncertain" role="note">
+          <p className="approval-uncertain-text">{uncertainMessage}</p>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={onReconcile}
+            disabled={busy}
+          >
+            Consultar estado
+          </button>
+        </div>
+      )}
+
       {isUncertain(approval) && (
         <p className="approval-uncertain" role="note">
           Resultado incierto: la solicitud no se reintenta. Revisa el equipo
@@ -182,7 +200,7 @@ function ApprovalCard({
         <p className="approval-result-error">{approval.result_error}</p>
       )}
 
-      {pending && (
+      {pending && !uncertainMessage && (
         <div className="approval-actions">
           <button
             type="button"
@@ -211,7 +229,7 @@ function ApprovalCard({
         </div>
       )}
 
-      {pending && !actionable && (
+      {pending && !actionable && !uncertainMessage && (
         <p className="approval-expired-note">
           Quedan menos de 10 segundos: recarga para ver el estado real.
         </p>
@@ -236,6 +254,10 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
   // Aviso corto para lectores de pantalla (no duplica el detalle de la
   // tarjeta, que se lee al navegar).
   const [announcement, setAnnouncement] = useState("");
+  // Solicitudes cuyo resultado NO se pudo confirmar (se perdio la respuesta
+  // del servidor). Nunca se reintentan solas: se consulta el estado
+  // persistido y decide la persona.
+  const [uncertain, setUncertain] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const load = useCallback(
@@ -321,10 +343,50 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
             return;
         }
       }
-      setActionError("No se pudo contactar con Jarvis. Revisa la conexión.");
+      setActionError(
+        "No se pudo contactar con Jarvis: no se ha podido confirmar el resultado. " +
+          "No se reintenta automáticamente; consulta el estado.",
+      );
     },
     [onUnauthorized],
   );
+
+  /**
+   * Consulta el estado PERSISTIDO de una solicitud.
+   *
+   * Es la respuesta a "no sé qué pasó": si la respuesta del servidor se
+   * perdió (red, timeout, cierre de la app), el estado real sigue en el
+   * ejecutor. Consultarlo es una lectura: no ejecuta nada y no puede
+   * duplicar una ejecucion.
+   */
+  const reconcile = useCallback(async (approvalId: string) => {
+    try {
+      const data = await api.approval(approvalId);
+      // Se valida ANTES de tocar el estado: los actualizadores de React se
+      // ejecutan mas tarde y fuera de este try.
+      if (!data || !data.approval) {
+        throw new Error("respuesta invalida del servicio de aprobaciones");
+      }
+      const current = data.approval;
+      setApprovals((prev) =>
+        prev.map((item) => (item.id === approvalId ? current : item)),
+      );
+      setUncertain((prev) => {
+        const next = { ...prev };
+        delete next[approvalId];
+        return next;
+      });
+      setAnnouncement("Estado actualizado.");
+      return true;
+    } catch {
+      setUncertain((prev) => ({
+        ...prev,
+        [approvalId]:
+          "No se pudo confirmar el resultado: el estado sigue sin verificar. No se reintenta.",
+      }));
+      return false;
+    }
+  }, []);
 
   const runAction = useCallback(async () => {
     if (!confirm || busy) return;
@@ -364,6 +426,14 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
       setConfirm(null);
       await load(true);
     } catch (err) {
+      // Si el fallo es de RED, la ejecucion puede haberse realizado: el
+      // estado real esta persistido en el ejecutor. Se consulta (es una
+      // lectura) y NO se reintenta la ejecucion.
+      if (kind === "approve" && !(err instanceof ApiError)) {
+        // El estado persistido es el que manda. No se recarga la lista: el
+        // elemento reconciliado ya es el autoritativo.
+        await reconcile(approval.id);
+      }
       handleActionError(err);
       if (err instanceof ApiError && (err.status === 409 || err.status === 401)) {
         await load(true);
@@ -371,7 +441,7 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
     } finally {
       setBusy(false);
     }
-  }, [confirm, busy, csrfToken, load, handleActionError]);
+  }, [confirm, busy, csrfToken, load, handleActionError, reconcile]);
 
   const open = useMemo(() => approvals.filter(isOpen), [approvals]);
   const history = useMemo(() => approvals.filter((a) => !isOpen(a)), [approvals]);
@@ -454,6 +524,7 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
                 busy={busy}
                 result={result}
                 expanded={Boolean(expanded[approval.id])}
+                uncertainMessage={uncertain[approval.id]}
                 onApprove={() => openConfirm(approval, "approve")}
                 onReject={() => openConfirm(approval, "reject")}
                 onToggleExpand={() =>
@@ -462,6 +533,7 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
                     [approval.id]: !prev[approval.id],
                   }))
                 }
+                onReconcile={() => void reconcile(approval.id)}
               />
             ))}
           </div>
@@ -483,6 +555,7 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
                 busy={busy}
                 result={result}
                 expanded={Boolean(expanded[approval.id])}
+                uncertainMessage={uncertain[approval.id]}
                 onApprove={() => openConfirm(approval, "approve")}
                 onReject={() => openConfirm(approval, "reject")}
                 onToggleExpand={() =>
@@ -491,6 +564,7 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
                     [approval.id]: !prev[approval.id],
                   }))
                 }
+                onReconcile={() => void reconcile(approval.id)}
               />
             ))}
           </div>
