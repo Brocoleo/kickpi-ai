@@ -16,6 +16,7 @@ catalogo y sus parametros tipados.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from .registry import Host, Operation, Registry
@@ -51,12 +52,27 @@ def _within(path: str, root: str) -> bool:
     return path.startswith(root.rstrip("/") + "/")
 
 
+# Cache de las raices resueltas: abrir una conexion SSH por cada raiz y en
+# cada operacion era un desperdicio (y ralentizaba las comprobaciones).
+# La clave incluye las raices del host: si cambian, la cache se invalida
+# (importante en pruebas, donde cada caso usa un tmp_path distinto).
+_ROOTS_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, list[str]]] = {}
+_ROOTS_TTL = 300.0
+
+
 async def _resolved_roots(host: Host) -> list[str]:
     """Raices autorizadas, resueltas en el host (sigue symlinks)."""
+    now = time.monotonic()
+    key = (host.id, host.roots)
+    cached = _ROOTS_CACHE.get(key)
+    if cached is not None and now - cached[0] < _ROOTS_TTL:
+        return cached[1]
+
     roots: list[str] = []
     for root in host.roots:
-        resolved = await resolve_path(host, root)
+        resolved, _error = await resolve_path(host, root)
         roots.append(resolved if resolved else root)
+    _ROOTS_CACHE[key] = (now, roots)
     return roots
 
 
@@ -105,9 +121,12 @@ async def check(
             return _deny(f"el proyecto {project_id} no define suite de tests")
 
         path = project.path
-        resolved_path = await resolve_path(host, path)
+        resolved_path, path_error = await resolve_path(host, path)
         if resolved_path is None:
-            return _deny(f"no se pudo resolver la ruta del proyecto {project_id}")
+            return _deny(
+                f"no se pudo resolver la ruta del proyecto {project_id} "
+                f"({path}): {path_error}"
+            )
         roots = await _resolved_roots(host)
         if not any(_within(resolved_path, root) for root in roots):
             return _deny(
@@ -131,9 +150,9 @@ async def check(
         if not raw.startswith("/"):
             return _deny("la ruta debe ser absoluta")
 
-        resolved_path = await resolve_path(host, raw)
+        resolved_path, path_error = await resolve_path(host, raw)
         if resolved_path is None:
-            return _deny(f"no se pudo resolver la ruta {raw}")
+            return _deny(f"no se pudo resolver la ruta {raw}: {path_error}")
         roots = await _resolved_roots(host)
         if not roots:
             return _deny(f"el host {host_id} no tiene raices autorizadas")

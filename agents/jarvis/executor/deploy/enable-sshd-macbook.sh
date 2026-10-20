@@ -88,12 +88,48 @@ if id -nG jarvis | tr ' ' '\n' | grep -qx sudo; then
 fi
 echo "      grupos de jarvis: $(id -nG jarvis) (sin 'sudo')"
 
-echo "[5/8] Permitiendo SOLO elatraveso de \$HOME (no listar)..."
-# El home suele ser drwxr-x---: sin esto el usuario jarvis no puede llegar a
-# las raices autorizadas. El ACL da 'x' (atravesar) sin 'r' (listar) y sin
-# tocar los permisos de grupo/otros.
-setfacl -m u:jarvis:--x "$ORIGINAL_HOME"
-echo "      $(getfacl -p "$ORIGINAL_HOME" 2>/dev/null | grep -E 'user:jarvis' || echo 'ACL aplicado')"
+echo "[5/8] Permitiendo SOLO elatraveso hasta las raices autorizadas..."
+# El home suele ser drwxr-x--- y los directorios intermedios pueden ser 0700:
+# sin ACL, el usuario jarvis no puede LLEGAR a las raices autorizadas. Se
+# aplica 'x' (atravesar, sin listar) a cada ancestro y 'r-x' a la raiz
+# (leer y recorrer), sin tocar grupo ni otros.
+python3 - "$ORIGINAL_HOME" "$ALLOWLIST_SRC" <<'PYEOF'
+import json, os, subprocess, sys
+
+home, allowlist_path = sys.argv[1], sys.argv[2]
+with open(allowlist_path, encoding="utf-8") as fh:
+    roots = (json.load(fh) or {}).get("roots") or []
+
+def run(*args):
+    subprocess.run(args, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+targets = {}
+for root in roots:
+    root = os.path.normpath(root)
+    if not root.startswith(home):
+        print(f"      aviso: la raiz {root} esta fuera de {home}; se ignora")
+        continue
+    parts = root[len(home):].strip("/").split("/") if root != home else []
+    current = home
+    # Ancestros: solo atravesar (x), sin listar.
+    for part in parts[:-1]:
+        current = os.path.join(current, part)
+        targets[current] = "u:jarvis:--x"
+    # La raiz autorizada: leer y recorrer (r-x), sin escribir.
+    if parts:
+        targets[root] = "u:jarvis:r-x"
+    else:
+        targets[home] = "u:jarvis:--x"
+
+for path, acl in sorted(targets.items()):
+    if not os.path.isdir(path):
+        print(f"      aviso: {path} no existe; se omite")
+        continue
+    run("setfacl", "-m", acl, path)
+    print(f"      {acl:<18} {path}")
+PYEOF
+echo "      ACL aplicada a $(getfacl -p "$ORIGINAL_HOME" 2>/dev/null | grep -c user:jarvis) ruta(s)"
 
 echo "[6/8] Instalando el forced command y el allow-list..."
 if [ ! -f "$WRAPPER_SRC" ]; then

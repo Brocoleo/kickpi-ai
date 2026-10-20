@@ -157,21 +157,37 @@ async def run(host: Host, argv: list[str], timeout: float | None = None) -> RunR
     return await _run_ssh(host, argv, limit)
 
 
-async def resolve_path(host: Host, path: str) -> str | None:
+async def resolve_path(host: Host, path: str) -> tuple[str | None, str | None]:
     """Resuelve la ruta REAL en el host (sigue symlinks).
 
     Se calcula en el host destino: el executor no comparte filesystem con el
     equipo remoto, y un symlink dentro de una raiz autorizada puede apuntar
     fuera de ella.
+
+    Devuelve (ruta_resuelta, error). El error distingue "el filtro remoto
+    lo ha rechazado" de "no existe", para poder explicar el motivo.
     """
     if host.is_local:
-        return os.path.realpath(path)
+        resolved = os.path.realpath(path)
+        if not os.path.exists(resolved):
+            return None, f"la ruta no existe: {resolved}"
+        return resolved, None
 
     result = await run(host, ["readlink", "-f", "--", path], timeout=10)
+    if result.error:
+        return None, result.error
     if not result.ok:
-        return None
+        # El forced command del equipo destino escribe el motivo en stderr.
+        detail = (result.stderr or "").strip().splitlines()
+        motivo = detail[-1] if detail else f"readlink devolvio {result.exit_code}"
+        return None, motivo
     resolved = result.stdout.strip()
-    return resolved or None
+    if not resolved:
+        return None, (
+            f"no se pudo resolver la ruta {path}: no existe o no es "
+            "alcanzable por el usuario de servicio"
+        )
+    return resolved, None
 
 
 def command_exists_local(argv: list[str]) -> bool:
