@@ -1,0 +1,26 @@
+{
+  "host": "macbook",
+  "roots": [
+    "/home/leandro/kickpi-ai",
+    "/home/leandro/Documentos/ChatGPT/React Native/apostol",
+    "/home/leandro/camera-facetime"
+  ],
+  "binaries": [
+    "uname",
+    "uptime",
+    "df",
+    "free",
+    "ls",
+    "git",
+    "node",
+    "npm",
+    "make",
+    "readlink",
+    "wc",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "find"
+  ]
+}
