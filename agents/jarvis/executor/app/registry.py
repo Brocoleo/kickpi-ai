@@ -6,8 +6,8 @@ aqui (denegar por defecto).
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -85,9 +85,30 @@ def _read_yaml(path: str) -> dict:
         return yaml.safe_load(fh) or {}
 
 
-@lru_cache
+# Cache con clave de invalidacion por mtime: si alguien edita hosts.yml o
+# catalog.yml (montados de solo lectura desde el repo), el cambio se aplica
+# sin reiniciar el contenedor.
+_CACHE: tuple[float, float, "Registry"] | None = None
+
+
+def _sources_mtime(settings) -> float:
+    newest = 0.0
+    for path in (settings.hosts_file, settings.catalog_file):
+        try:
+            newest = max(newest, Path(path).stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
 def load_registry() -> Registry:
+    global _CACHE
     settings = get_settings()
+    mtime = _sources_mtime(settings)
+    now = time.monotonic()
+    if _CACHE is not None and _CACHE[0] == mtime and now - _CACHE[1] < 5.0:
+        return _CACHE[2]
+
     hosts_raw = _read_yaml(settings.hosts_file)
     catalog_raw = _read_yaml(settings.catalog_file)
 
@@ -146,4 +167,6 @@ def load_registry() -> Registry:
             extra={k: v for k, v in item.items() if k not in {"id", "label", "host", "path", "test_command", "enabled"}},
         )
 
-    return Registry(hosts=hosts, operations=operations, projects=projects)
+    registry = Registry(hosts=hosts, operations=operations, projects=projects)
+    _CACHE = (mtime, now, registry)
+    return registry
