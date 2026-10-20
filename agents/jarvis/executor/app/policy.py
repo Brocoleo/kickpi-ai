@@ -4,8 +4,13 @@ Una operacion solo se ejecuta si TODAS estas reglas se cumplen:
 
 1. El host existe y esta habilitado.
 2. La operacion existe en el catalogo (lo que no esta, no existe).
-3. La operacion esta marcada como auto-aprobable (en V0.3 no hay UI de
-   aprobacion: lo demas se deniega).
+3. La operacion esta marcada como auto-aprobable. Si NO lo esta, la peticion
+   no se deniega de plano: se marca `requires_approval` y se sigue
+   validando TODO lo demas (host, proyecto, rutas, limites). Solo si el
+   resto de reglas pasan, la peticion se convierte en una SOLICITUD DE
+   APROBACION pendiente de un humano. Si alguna otra regla falla, es un
+   deniego normal y no hay nada que aprobar: una aprobacion nunca puede
+   convertir una operacion prohibida en permitida.
 4. La operacion esta permitida en ese host.
 5. Los parametros de ruta caen dentro de las raices autorizadas del host,
    RESUELTAS en el propio host (symlinks incluidos).
@@ -30,6 +35,10 @@ class Decision:
     argv: list[str] | None = None
     resolved_path: str | None = None
     timeout: int | None = None
+    #: La operacion es valida pero requiere aprobacion humana (Fase C).
+    #: En ese caso `allowed` sigue siendo False: NADIE puede ejecutarla sin
+    #: que un humano la apruebe antes.
+    requires_approval: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -38,6 +47,7 @@ class Decision:
             "argv": self.argv,
             "resolved_path": self.resolved_path,
             "timeout": self.timeout,
+            "requires_approval": self.requires_approval,
         }
 
 
@@ -93,11 +103,18 @@ async def check(
     if operation is None:
         # Deny by default: lo que no esta en el catalogo no se ejecuta.
         return _deny(f"operacion no permitida: {operation_id}")
-    if not operation.auto:
-        return _deny(
-            f"la operacion {operation_id} no es auto-aprobable; requiere "
-            "aprobacion explicita (no disponible en V0.3)"
+
+    # Regla 3: una operacion no auto-aprobable NO se ejecuta nunca sin
+    # aprobacion humana. Se marca y se sigue validando el resto: solo si
+    # TODO lo demas es valido tiene sentido abrir una solicitud.
+    requires_approval = not operation.auto
+    if requires_approval:
+        approval_reason = (
+            f"la operacion {operation_id} requiere aprobacion humana explicita"
         )
+    else:
+        approval_reason = "ok"
+
     if operation.hosts and "*" not in operation.hosts and host.id not in operation.hosts:
         return _deny(f"la operacion {operation_id} no aplica a {host_id}")
 
@@ -183,6 +200,17 @@ async def check(
     if any("{" in part and "}" in part for part in argv):
         # Quedo un marcador sin resolver: no se ejecuta a medias.
         return _deny("la operacion tiene parametros sin resolver")
+
+    if requires_approval:
+        # Valida, pero NUNCA se ejecuta sola: queda pendiente de un humano.
+        return Decision(
+            allowed=False,
+            requires_approval=True,
+            reason=approval_reason,
+            argv=argv,
+            resolved_path=resolved_path,
+            timeout=timeout,
+        )
 
     return Decision(
         allowed=True,

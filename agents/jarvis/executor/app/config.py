@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     # Token interno que comparte con el agente. Nunca sale del compose.
     token: str = ""
 
+    # Token de APROBACIONES (Fase C). Deliberadamente DISTINTO del token del
+    # ejecutor: el agente lo usa solo como proxy autenticado de la PWA y
+    # NUNCA lo inyecta en el flujo de herramientas del LLM.
+    approvals_token: str = ""
+
     # Ficheros de configuración (montados de solo lectura).
     hosts_file: str = "/app/config/hosts.yml"
     catalog_file: str = "/app/config/catalog.yml"
@@ -28,6 +33,15 @@ class Settings(BaseSettings):
 
     # Base de datos de auditoria.
     audit_db: str = "/data/audit.db"
+
+    # --- Aprobaciones humanas (Fase C) ---
+    # Vida maxima de una solicitud pendiente/aprobada (5 minutos).
+    approval_ttl_seconds: int = 300
+    # Maximo de solicitudes pendientes por host (anti-flood del LLM).
+    max_pending_per_host: int = 20
+    # A partir de este tiempo en estado 'executing', el resultado se considera
+    # incierto: la solicitud se marca 'failed' y NO se reintenta nunca.
+    stale_executing_seconds: int = 600
 
     # Numero maximo de reintentos de CONEXION (nunca de una orden ya enviada).
     connect_retries: int = 1
