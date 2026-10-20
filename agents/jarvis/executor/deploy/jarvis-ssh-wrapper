@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
 import sys
 
 # Rutas candidatas del allow-list. La primera es la que deja el instalador
@@ -26,17 +25,36 @@ CONFIG_CANDIDATES = [
 ]
 CONFIG = next((c for c in CONFIG_CANDIDATES if c and os.path.isfile(c)), CONFIG_CANDIDATES[1])
 
-# Ejecutables permitidos. Nada de 'sh', 'bash', 'env' libre ni interpretes:
-# eso permitiria ejecutar cualquier cosa.
-ALLOWED_BINARIES = {
-    "uname", "uptime", "df", "free", "ls", "git", "node", "npm",
-    "make", "readlink", "wc", "cat", "head", "tail", "grep", "find",
-}
+# PATH minimo y controlado. El de la sesion SSH forzada no incluye nvm, y
+# node vive ahi; el allow-list declara las rutas donde se busca.
+DEFAULT_PATH = ["/usr/local/bin", "/usr/bin", "/bin"]
 
 
 def die(message: str, code: int = 1) -> "None":
     sys.stderr.write(f"jarvis-ssh-wrapper: {message}\n")
     raise SystemExit(code)
+
+
+def _git_subcommand(argv: list[str]) -> str:
+    """Primer argumento no-opcion de git (saltando las opciones con valor)."""
+    skip_value = {"-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token in skip_value:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return token
+    return ""
+
+
+def _within(path: str, root: str) -> bool:
+    if path == root:
+        return True
+    return path.startswith(root.rstrip("/") + "/")
 
 
 def main() -> None:
@@ -51,7 +69,9 @@ def main() -> None:
         die(f"no se pudo leer la lista permitida: {exc}")
 
     roots: list[str] = config.get("roots") or []
-    binaries: set[str] = set(config.get("binaries") or []) or ALLOWED_BINARIES
+    binaries: set[str] = set(config.get("binaries") or [])
+    search_path: list[str] = config.get("path") or DEFAULT_PATH
+    os.environ["PATH"] = ":".join(search_path)
 
     try:
         argv = shlex.split(original)
@@ -63,36 +83,57 @@ def main() -> None:
 
     program = os.path.basename(argv[0])
 
-    # `env -C <dir> <cmd>`: unica forma de env permitida. Se comprueba el
-    # directorio y se extrae el comando real, que despues se valida como
-    # cualquier otro. 'env' NO esta en la lista de binarios: fuera de esta
-    # forma se rechaza.
+    # `env -C <dir> <cmd...>`: unica forma de env permitida.
+    # NO se quita el prefijo: `env` es quien hace el chdir al directorio y
+    # luego ejecuta el comando. Solo se valida.
     if program == "env":
         if len(argv) < 4 or argv[1] != "-C":
             die("uso de env no permitido (solo 'env -C <dir> <cmd>')")
         directory = argv[2]
         if not any(_within(directory, root) for root in roots):
             die(f"directorio fuera de las raices permitidas: {directory}")
-        argv = argv[3:]
-        if not argv:
-            die("comando vacio tras env -C")
-        program = os.path.basename(argv[0])
-
-    if program not in binaries:
-        die(f"ejecutable no permitido: {program}")
+        inner = os.path.basename(argv[3])
+        if inner not in binaries:
+            die(f"ejecutable no permitido: {inner}")
+    else:
+        if program not in binaries:
+            die(f"ejecutable no permitido: {program}")
 
     # Cualquier argumento que parezca una ruta absoluta debe caer en las
-    # raices permitidas. Los relatives se resuelven contra el cwd validado.
+    # raices permitidas. Los relativos se resuelven contra el cwd validado.
     for token in argv[1:]:
         if token.startswith("/") and not any(_within(token, root) for root in roots):
             die(f"ruta fuera de las raices permitidas: {token}")
         if "\n" in token or "\x00" in token:
             die("caracteres no permitidos en un argumento")
 
+    # --- Forma de invocacion permitida por binario ---
+    # Un interprete (node) o una herramienta con subcomandos (git) permitiria
+    # ejecucion arbitraria de codigo si se aceptase cualquier forma.
+    rules: dict = config.get("rules") or {}
+    effective = argv[3:] if program == "env" else argv
+    inner_program = os.path.basename(effective[0]) if effective else ""
+
+    rule = rules.get(inner_program)
+    if rule:
+        if "argv1" in rule:
+            if len(effective) < 2 or effective[1] != rule["argv1"]:
+                die(
+                    f"uso no permitido de {inner_program}: solo se admite "
+                    f"'{inner_program} {rule['argv1']} <ficheros...>'"
+                )
+        if "subcommands" in rule:
+            sub = _git_subcommand(effective)
+            if sub not in rule["subcommands"]:
+                die(
+                    f"subcomando de {inner_program} no permitido: {sub} "
+                    f"(permitidos: {', '.join(rule['subcommands'])})"
+                )
+
     # git (>= 2.35.2) rechaza repos propiedad de otro usuario con
     # "dubious ownership". Se declara SEGURO solo cada ruta autorizada
     # (y su .git), nunca '*': el ambito es explicito y acotado.
-    if program == "git":
+    if program == "git" or (program == "env" and os.path.basename(argv[3]) == "git"):
         allowed_dirs: list[str] = []
         for root in roots:
             allowed_dirs.append(root)
@@ -103,13 +144,8 @@ def main() -> None:
         os.environ["GIT_CONFIG_COUNT"] = str(len(allowed_dirs))
 
     sys.stderr.write(f"jarvis-ssh-wrapper: permitido -> {original}\n")
+    # exec del argv ORIGINAL (con 'env -C' intacto): env hace el chdir.
     os.execvp(argv[0], argv)
-
-
-def _within(path: str, root: str) -> bool:
-    if path == root:
-        return True
-    return path.startswith(root.rstrip("/") + "/")
 
 
 if __name__ == "__main__":
