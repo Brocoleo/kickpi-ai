@@ -7,33 +7,65 @@ el servidor. Inferencia en la nube (OpenRouter / cualquier API compatible).
 ## Arquitectura
 
 ```
-   iPhone (PWA instalada)
-        │  HTTPS, mismo origen
-        ▼
-   Tailscale Serve :8888
-        │
-   ┌─────────────────┐   HTTP interno   ┌──────────────────┐
-   │  jarvis-agent   │ ───────────────► │  jarvis-tools    │
-   │  FastAPI + PWA  │  X-Tools-Token   │  psutil + docker │
-   │  LangGraph      │                  └────────┬─────────┘
-   │  SQLite         │                           │
-   └────────┬────────┘                           │ /var/run/docker.sock
-            │ HTTPS                              ▼
-            ▼                             Docker (SOLO lectura)
-     OpenRouter / LLM
+   iPhone (PWA instalada) - MacBook (SSH) - navegador
+         |  HTTPS, mismo origen (Tailscale)
+         v
+   Tailscale Serve (host-level)
+     :8888 -> jarvis-agent     :8443 -> filebrowser     / -> portainer
+         |
+   +------------------+   HTTP interno    +----------------------+
+   |   jarvis-agent   | ---------------> |   jarvis-tools       |
+   |   FastAPI + PWA  |  X-Tools-Token   |   psutil + Docker    |
+   |   LangGraph      |                  +-----------+----------+
+   |   SQLite         |                              | tcp://:2375
+   +--------+---------+                              v
+            | HTTPS                    +------------------------------+
+            v                          |  docker-socket-proxy (haproxy)|
+     OpenRouter / LLM                  |  ACL por endpoint exacto     |
+                                       +--------------+---------------+
+                                                      | /var/run/docker.sock
+                                                      v
+                        +-----------------------------+--------------+
+                        |  Docker                                    |
+                        |  jarvis-agent jarvis-tools portainer  fb  |
+                        +-----------------------------+--------------+
+                                                      v
+                            /mnt/data  (HDD 750 GB, ext4, UUID en fstab)
+                            |-- docker/...    datos persistentes
+                            `-- nas/files/    raiz del FileBrowser
 ```
 
 - **jarvis-agent** no ve Docker ni el sistema: solo habla con `jarvis-tools`.
-- **jarvis-tools** es el único con el socket de Docker y solo expone `GET`.
-- La **PWA se sirve desde el propio agente** (`/`), así que la API (`/api/*`) y
+- **jarvis-tools** **no monta `docker.sock`**: habla con el proxy por TCP.
+- **docker-socket-proxy** es el unico que monta el socket (junto a Portainer,
+  que necesita la API completa) y aplica una **ACL por endpoint exacto**.
+- La **PWA se sirve desde el propio agente** (`/`), asi que la API (`/api/*`) y
   la interfaz comparten origen: **cero CORS** y una sola superficie expuesta.
 
 ## Servicios y puertos
 
-| Servicio | Puerto | Exposición |
+| Servicio | Puerto | Exposicion |
 |---|---|---|
-| `jarvis-agent` | 8888 | `127.0.0.1:8888` → Tailscale Serve HTTPS |
+| `jarvis-agent` | 8888 | `127.0.0.1:8888` -> Tailscale Serve HTTPS |
 | `jarvis-tools` | 8000 | interna en la red `jarvis` (no publicada) |
+| `docker-socket-proxy` | 2375 | interna en la red `dsp` (no publicada, sin salida a internet) |
+| `portainer` | 9443 | `127.0.0.1:9443` -> Tailscale Serve HTTPS |
+| `filebrowser` | 8080 | `127.0.0.1:8080` -> Tailscale Serve HTTPS |
+
+> Tailscale Serve proxya al **loopback del host**: los puertos deben estar
+> publicados con `ports: "127.0.0.1:<p>:<p>"`. `expose:` solo documenta y no
+> basta (produce 502).
+
+## Almacenamiento y montaje
+
+- El disco externo (HGST 750 GB, ext4) se monta en `/mnt/data` por **UUID**
+  en `/etc/fstab`.
+- `docker.service` tiene un drop-in que lo ata al montaje:
+  `Requires=` + `After=` + `BindsTo=mnt-data.mount`. Si el disco no esta, los
+  contenedores que dependen de `/mnt/data` no arrancan (ni escriben por
+  error sobre la eMMC).
+- 3 de 4 servicios dependen de `/mnt/data`: `jarvis-agent`, `portainer` y
+  `filebrowser`. `jarvis-tools` no.
 
 ## Puesta en marcha
 
@@ -111,7 +143,7 @@ Cuatro secciones: **Chat**, **Métricas**, **Archivos**, **Ajustes**.
 |---|---|
 | `system_stats` | CPU (total y por núcleo), carga, temperatura, RAM, swap, uptime |
 | `disk_usage` | Uso de disco de `/`, `/mnt/data`, `/data` |
-| `docker_ps` | Contenedores: estado, salud, puertos, imagen, reinicios |
+| `docker_ps` | Contenedores: estado, salud, puertos, imagen |
 | `container_logs` | Últimas N líneas, saneadas (secretos redactados, tamaño acotado) |
 
 ## Fallback de modelos (disponibilidad sin coste)
@@ -169,15 +201,58 @@ o **token de API**.
 | Login incorrecto | 401 |
 | Logout | La sesión deja de valer (401) |
 | Chat con LLM | Respuesta válida + `tool_trace` |
-| Métricas | CPU/RAM/temperatura y 4 contenedores reales |
+| Métricas | CPU/RAM/temperatura y 5 contenedores reales |
 | Reinicio del agente | Historial SQLite conservado |
 | Tailscale Serve | Solo accesible desde la tailnet |
 
-## Endurecimiento (siguiente iteración)
+## Endurecimiento (Fase A aplicada)
 
-1. **Socket de Docker**: interponer `tecnativa/docker-socket-proxy` (rechaza
-   cualquier método no-GET) y retirar el montaje directo.
-2. **Contenedor de tools**: `read_only`, `cap_drop: [ALL]`, usuario sin
-   privilegios.
-3. **Rotación de tokens** y revocación de sesiones desde Ajustes.
-4. **Notificaciones Telegram** (opcional) para alertas del agente.
+### 1. Socket de Docker: proxy con ACL por endpoint
+
+`tecnativa/docker-socket-proxy:v0.5.0` (arm64) con config propia en
+`deploy/docker-socket-proxy/haproxy.cfg`. La ACL de la imagen
+(`CONTAINERS=1`) es un match de **prefijo** y permite
+`GET /containers/{id}/json` (inspect), que devuelve `Config.Env` con los
+secretos de los otros contenedores. Aqui la ACL es exacta:
+
+| Endpoint | Permitido | Uso |
+|---|---|---|
+| `GET /version` | si | negociacion del SDK |
+| `GET /_ping` | si | health del cliente |
+| `GET /containers/json` | si | listar contenedores |
+| `GET /containers/{n}/logs` | si | tool `container_logs` |
+| `GET /containers/{n}/stats` | si | tool `container_stats` |
+| `GET /containers/{n}/json` | **no** | *inspect = fuga de `Config.Env`* |
+| `POST`/`DELETE` (cualquiera) | **no** | toda mutacion de la API Docker |
+| `/info`, `/images`, `/volumes`, `/exec`, `/events` | **no** | no necesarios |
+
+Por eso `tools/app/docker_api.py` **no usa el cliente de alto nivel de
+docker-py** (`containers.list()` y `containers.get()` inspeccionan siempre):
+habla la API de Docker directamente sobre los tres endpoints permitidos.
+Consecuencia: `docker_ps` no puede devolver `started_at`/`restart_count`
+(requieren inspect); el resto de campos (`name`, `image`, `state`, `health`,
+`ports`) se derivan de `/containers/json`.
+
+### 2. Proteccion del montaje
+
+Drop-in en `/etc/systemd/system/docker.service.d/override.conf`:
+`Requires=` + `After=` + `BindsTo=mnt-data.mount`.
+
+### 3. FileBrowser sin soporte
+
+`filebrowser/filebrowser` (upstream) esta **archivado** desde 2026-09-01.
+Migrado a **FileBrowser Quantum `1.5.8-stable-slim`** (fork mantenido,
+Apache-2.0, arm64), que conserva **BoltDB**: el usuario `admin` y su hash
+bcrypt se mantienen, sin perdida. Config en `deploy/filebrowser/config.yaml`.
+Rollback: `/mnt/data/docker/filebrowser/{cfg,db}` (BD original) y
+`/mnt/data/nas/backups/filebrowser-pre-migration-*/`.
+
+### Pendiente
+
+1. **Volumenes huerfanos** (`filebrowser_cfg`, `filebrowser_db`,
+   `filebrowser_srv`, `portainer_data`): ya no se montan, pero siguen
+   ocupando espacio. No se borran sin autorizacion explicita.
+2. **Rotacion de tokens** y revocacion de sesiones desde Ajustes.
+3. **Notificaciones Telegram** (opcional) para alertas del agente.
+4. **`jarvis-executor`** para ejecucion remota multi-host con motor de
+   politicas y aprobaciones.

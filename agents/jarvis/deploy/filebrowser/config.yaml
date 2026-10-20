@@ -1,0 +1,51 @@
+# ============================================================================
+# FileBrowser Quantum v1.5.x — configuracion
+# ----------------------------------------------------------------------------
+# Fork mantenido del FileBrowser original (upstream archivado en 2026-09-01).
+# Canal v1: mantiene la base de datos BoltDB, por lo que la migracion desde
+# el FileBrowser original es sin perdida de usuarios ni contrasena.
+#
+# Este archivo parte del config por defecto de la imagen (esquema validado)
+# con tres cambios:
+#   1. port 80 -> 8080   (el contenedor corre como uid 1000; Tailscale Serve
+#                        ya apunta a http://localhost:8080)
+#   2. baseURL -> /files (equivalente al FB_BASEURL del contenedor anterior)
+#   3. sources[0] con name y config.defaultEnabled
+#
+# La ruta de la BD no se fija aqui: la imagen usa FILEBROWSER_DATABASE, que
+# apunta al directorio montado /home/filebrowser/data.
+# ============================================================================
+server:
+  port: 8080
+  baseURL:  "/files"
+  cacheDir: "/home/filebrowser/data/tmp"
+  logging:
+    - levels: "info|warning|error"
+  sources:
+    - path: "/srv"
+      name: "Files"
+      config:
+        defaultEnabled: true
+auth:
+  methods:
+    password:
+      enabled: true
+      minLength: 5
+      signup: false
+    passkey:
+      enabled: false
+userDefaults:
+  account:
+    permissions:
+      api: false
+      admin: false
+      modify: false
+      share: false
+      realtime: false
+      delete: false
+      create: false
+      download: true
+    lockPassword: false
+    disableSettings: false
+    loginMethod: "password"
+    disableUpdateNotifications: false

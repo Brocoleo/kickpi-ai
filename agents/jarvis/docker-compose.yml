@@ -107,29 +107,43 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /mnt/data/docker/portainer:/data
-    expose:
-      - "9443"
+    # Tailscale Serve proxya a https://127.0.0.1:9443 en el HOST, asi que el
+    # puerto debe estar publicado (bound a loopback, nunca a la red).
+    ports:
+      - "127.0.0.1:9443:9443"
     networks:
       - jarvis
     security_opt:
       - no-new-privileges:true
 
   filebrowser:
-    image: filebrowser/filebrowser:latest
+    # Upstream filebrowser/filebrowser esta ARCHIVADO (sin parches de seguridad).
+    # Quantum v1.5.8 es el fork mantenido y conserva BoltDB, asi que la
+    # migracion es sin perdida de usuarios ni contrasena.
+    image: gtstef/filebrowser:1.5.8-stable-slim
     container_name: filebrowser
     restart: unless-stopped
     environment:
-      FB_BASEURL: /files
+      FILEBROWSER_CONFIG: /home/filebrowser/data/config.yaml
+      FILEBROWSER_DATABASE: /home/filebrowser/data/database.db
     volumes:
-      - /mnt/data/docker/filebrowser/cfg:/config
-      - /mnt/data/docker/filebrowser/db:/database
+      - /mnt/data/docker/filebrowser/data:/home/filebrowser/data
       - /mnt/data/nas/files:/srv
-    expose:
-      - "8080"
+    # Tailscale Serve proxya a http://127.0.0.1:8080 en el HOST.
+    ports:
+      - "127.0.0.1:8080:8080"
     networks:
       - jarvis
     security_opt:
       - no-new-privileges:true
+    # El HEALTHCHECK de la imagen apunta a /health en el puerto 80, pero la
+    # app escucha en 8080 con baseURL /files.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/files/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 networks:
   jarvis:
