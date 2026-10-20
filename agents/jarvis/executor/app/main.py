@@ -99,12 +99,16 @@ def health() -> dict:
 
 @app.get("/operations", tags=["meta"], dependencies=[Depends(require_token)])
 def list_operations() -> dict:
-    """Catalogo de operaciones auto-aprobables."""
+    """Catalogo de operaciones.
+
+    Incluye las auto-aprobables y las que exigen aprobacion humana
+    (`requires_approval: true`): asi el cliente sabe que existen y que no
+    van a ejecutarse solas. Verlas NO da ninguna capacidad: el Policy
+    Engine sigue denegando por defecto y estas no se ejecutan sin un humano.
+    """
     registry = load_registry()
     items = []
     for op in registry.operations.values():
-        if not op.auto:
-            continue
         items.append(
             {
                 "id": op.id,
@@ -112,6 +116,8 @@ def list_operations() -> dict:
                 "description": op.description,
                 "hosts": list(op.hosts),
                 "risk": op.risk,
+                "auto": op.auto,
+                "requires_approval": not op.auto,
                 "params": [
                     name
                     for name in ("path", "project_id", "count")

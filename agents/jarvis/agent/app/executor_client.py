@@ -17,6 +17,35 @@ class ExecutorError(RuntimeError):
     """Fallo al invocar el ejecutor."""
 
 
+#: Mapa CERRADO de las operaciones del catalogo que el LLM puede pedir, con
+#: sus parametros tipados. Es la vista que ve el modelo: no es una via de
+#: ejecucion generica. El ejecutor sigue aplicando deny by default sobre SU
+#: catalogo (lo que no este ahi, no se ejecuta), y las operaciones marcadas
+#: como "requiere aprobacion humana" nunca se ejecutan solas: generan una
+#: solicitud pendiente que solo un humano autenticado puede aprobar.
+#:
+#: La lista se genera desde aqui, de modo que la descripcion de la tool no
+#: puede desincronizarse del mapa.
+OPERATIONS_CATALOGO: dict[str, str] = {
+    "host_uname": "",
+    "host_uptime": "",
+    "host_disk_free": "",
+    "host_mem_free": "",
+    "host_list_dir": "parametro 'path'",
+    "host_git_status": "parametro 'path'",
+    "host_git_log": "parametros 'path' y 'count'",
+    "host_git_diff_stat": "parametro 'path'; requiere aprobacion humana",
+    "host_project_test": "parametro 'project_id'",
+}
+
+
+def operations_text() -> str:
+    """Catalogo legible para la descripcion de la herramienta."""
+    return ", ".join(
+        f"{op} ({params})" if params else op for op, params in OPERATIONS_CATALOGO.items()
+    )
+
+
 # Esquema que ve el LLM. `host` admite los ids del registro.
 TOOL_SPECS = [
     {
@@ -59,10 +88,7 @@ TOOL_SPECS = [
                 "Ejecuta una operacion AUTORIZADA del catalogo en un equipo. "
                 "No acepta comandos de shell: solo el identificador de una "
                 "operacion del catalogo y sus parametros. Operaciones disponibles: "
-                "host_uname, host_uptime, host_disk_free, host_mem_free, "
-                "host_list_dir (parametro 'path'), host_git_status (parametro 'path'), "
-                "host_git_log (parametros 'path' y 'count'), "
-                "host_project_test (parametro 'project_id'). "
+                f"{operations_text()}. "
                 "Las rutas deben estar dentro de las raices autorizadas del equipo. "
                 "Si la operacion exige aprobacion humana, la herramienta NO la ejecuta: "
                 "crea una solicitud pendiente y te devuelve su identificador. "

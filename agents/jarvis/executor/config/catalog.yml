@@ -5,8 +5,11 @@
 #
 #   auto: true   -> se puede ejecutar sin aprobacion humana (solo lectura o
 #                   una suite de tests predefinida de un proyecto autorizado).
-#   auto: false  -> requiere aprobacion explicita. En V0.3 no hay UI de
-#                   aprobacion, asi que el Policy Engine lo DENIEGA.
+#   auto: false  -> requiere aprobacion humana EXPLICITA. El Policy Engine
+#                   la valida por completo pero NO la ejecuta: se convierte
+#                   en una solicitud pendiente que solo un humano autenticado
+#                   puede aprobar (ver /approvals). Si cualquier otra regla
+#                   falla, es un deniego normal y no hay nada que aprobar.
 #
 # `command` se pasa como argv (nunca como linea de shell). Los marcadores
 # {path} y {count} los resuelve el Policy Engine tras validarlos.
@@ -73,6 +76,22 @@ operations:
     path_param: path
     int_param: count
     int_param_max: 30
+    timeout: 30
+
+  # Operacion INOCUA pero NO auto-aprobable: existe para validar el flujo
+  # completo de aprobacion humana (Fase C). Es de solo lectura (`git diff
+  # --stat` no escribe nada, no dispara hooks y no toca el indice), pero
+  # SIEMPRE exige la aprobacion de una persona: nunca se ejecuta sola.
+  - id: host_git_diff_stat
+    title: "Resumen de cambios pendientes (git diff --stat)"
+    description: >-
+      Resumen de los cambios sin commitear de un repositorio autorizado.
+      Solo lectura: git --no-optional-locks -C <ruta> diff --stat. No
+      escribe nada, no dispara hooks y no modifica el repositorio.
+    risk: read
+    auto: false
+    command: ["git", "--no-optional-locks", "-C", "{path}", "diff", "--stat"]
+    path_param: path
     timeout: 30
 
   - id: host_project_test

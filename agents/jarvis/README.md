@@ -240,15 +240,22 @@ como `1000:1000`, con `cap_drop: ALL` y `read_only: true`.
 `equipos_ejecutar` acepta el **id de una operación del catálogo** y sus
 parámetros tipados. El catálogo vive en `executor/config/catalog.yml`:
 
-| Operación | Riesgo | Parámetros |
-|---|---|---|
-| `host_uname`, `host_uptime`, `host_disk_free`, `host_mem_free` | read | — |
-| `host_list_dir` | read | `path` |
-| `host_git_status` | read | `path` |
-| `host_git_log` | read | `path`, `count` (1..30) |
-| `host_project_test` | execute | `project_id` |
+| Operación | Riesgo | Parámetros | Aprobación |
+|---|---|---|---|
+| `host_uname`, `host_uptime`, `host_disk_free`, `host_mem_free` | read | — | automática |
+| `host_list_dir` | read | `path` | automática |
+| `host_git_status` | read | `path` | automática |
+| `host_git_log` | read | `path`, `count` (1..30) | automática |
+| `host_git_diff_stat` | read | `path` | **humana** |
+| `host_project_test` | execute | `project_id` | automática |
 
 Lo que no está en el catálogo **no existe**: el Policy Engine lo deniega.
+
+`host_git_diff_stat` (`git --no-optional-locks -C <ruta> diff --stat`) es la
+operación de demostración del flujo de aprobación humana: es inocua (solo
+lectura, sin hooks, sin escritura) pero **nunca** es automática. Al pedirla,
+el ejecutor no ejecuta nada: abre una solicitud pendiente que solo una
+persona autenticada puede aprobar.
 
 ### Policy Engine (deny by default)
 
@@ -256,8 +263,12 @@ Una operación solo se ejecuta si se cumplen **todas** estas reglas:
 
 1. El host existe y está habilitado.
 2. La operación está en el catálogo.
-3. La operación es auto-aprobable (lo demás se deniega: en v0.3 no hay UI de
-   aprobación).
+3. La operación es auto-aprobable **o** cuenta con la aprobación humana
+   explícita. Si no es auto-aprobable, el Policy Engine la valida por
+   completo pero **no** la ejecuta: abre una solicitud pendiente. Si
+   cualquier otra regla falla, es un deniego normal y no hay nada que
+   aprobar (una aprobación nunca convierte una operación prohibida en
+   permitida).
 4. La operación aplica a ese host.
 5. Las rutas caen dentro de las `roots` del host, **resueltas en el host
    destino** (`readlink -f`), de modo que un symlink que apunte fuera se
@@ -296,8 +307,11 @@ Una operación solo se ejecuta si se cumplen **todas** estas reglas:
 
 - **PC Xeon (Linux Mint)**: no aparece en la tailnet. El registro lo tiene
   como `desktop` **deshabilitado** hasta que se configure su dirección real.
-- **Aprobación humana**: las operaciones no auto-aprobables se deniegan; falta
-  la UI para aprobarlas.
+- **Aprobación humana**: implementada en código (C1 en el ejecutor, C2 como
+  proxy autenticado en el agente, C3 con la operación de demostración
+  `host_git_diff_stat`) pero **sin desplegar**: faltan el token de
+  aprobaciones en el `.env` del board, reconstruir los contenedores y la
+  pestaña «Aprobaciones» de la PWA (C4).
 - **Segunda ubicación de respaldos**: hoy `/mnt/data/nas/backups` está en el
   mismo disco HGST que los datos: protege de errores lógicos, no de la
   fallo del disco.
