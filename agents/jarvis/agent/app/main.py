@@ -31,6 +31,7 @@ from .security import (
     reset_login_failures,
     session_fingerprint,
 )
+from .executor_client import ExecutorError, call_executor
 from .tools_client import TOOL_SPECS, ToolsError, call_tool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -191,6 +192,45 @@ async def list_tools() -> dict:
         "read_only": True,
         "tools": [t["function"]["name"] for t in TOOL_SPECS],
         "specs": TOOL_SPECS,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Equipos (ejecutor multi-host)
+# --------------------------------------------------------------------------- #
+@app.get("/api/equipos", tags=["equipos"], dependencies=[Depends(require_auth)])
+async def list_equipos() -> dict:
+    """Equipos registrados con su estado y las últimas ejecuciones."""
+    try:
+        hosts = await call_executor("equipos_list")
+    except ExecutorError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    # Estado en paralelo para no encadenar latencias.
+    items = []
+    host_list = hosts.get("hosts") or []
+    statuses = await asyncio.gather(
+        *[call_executor("equipos_status", {"host": h.get("id")}) for h in host_list],
+        return_exceptions=True,
+    )
+    for host, status in zip(host_list, statuses):
+        entry = {**host}
+        if isinstance(status, Exception):
+            entry["online"] = False
+            entry["reason"] = str(status)
+        else:
+            entry.update(status)
+        items.append(entry)
+
+    try:
+        history = await call_executor("equipos_historial", {"limit": 20})
+    except ExecutorError:
+        history = {"executions": []}
+
+    return {
+        "hosts": items,
+        "executions": history.get("executions") or [],
+        "count": len(items),
     }
 
 

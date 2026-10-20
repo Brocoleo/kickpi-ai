@@ -66,6 +66,12 @@ el servidor. Inferencia en la nube (OpenRouter / cualquier API compatible).
   error sobre la eMMC).
 - 3 de 4 servicios dependen de `/mnt/data`: `jarvis-agent`, `portainer` y
   `filebrowser`. `jarvis-tools` no.
+- **Nunca montes `/mnt/data` a mano**: systemd ya lo gestiona. Un `mount`
+  manual apila un segundo montaje y el `umount` solo quita el de arriba,
+  dejando el disco montado. Usa `systemctl start mnt-data.mount`.
+- Comprobado de forma controlada: con el disco no disponible,
+  `systemctl start docker` falla con *"A dependency job for docker.service
+  failed"* y Docker **no arranca**.
 
 ## Puesta en marcha
 
@@ -204,6 +210,97 @@ o **token de API**.
 | Métricas | CPU/RAM/temperatura y 5 contenedores reales |
 | Reinicio del agente | Historial SQLite conservado |
 | Tailscale Serve | Solo accesible desde la tailnet |
+
+## Fase B — Ejecutor multi-host (v0.3)
+
+Servicio independiente `jarvis-executor` (FastAPI + asyncssh). Corre **en el
+board** y alcanza los otros equipos por SSH. **No monta `docker.sock`**, corre
+como `1000:1000`, con `cap_drop: ALL` y `read_only: true`.
+
+```
+   iPhone (PWA) → jarvis-agent ──HTTP interno──► jarvis-executor
+                                                     │  Policy Engine
+                                                     │  (deny by default)
+                                                     ▼
+                            macbook (SSH)   desktop (SSH)
+                            100.126.29.56   (sin direccion: no esta en la tailnet)
+```
+
+### Herramientas
+
+| Herramienta | Qué hace |
+|---|---|
+| `equipos_list` | Lista los equipos registrados y si están habilitados |
+| `equipos_status` | Comprueba si un equipo responde (online/offline) |
+| `equipos_ejecutar` | Ejecuta una operación **del catálogo** en un equipo |
+| `equipos_historial` | Últimas ejecuciones auditadas |
+
+### El LLM NO escribe comandos de shell
+
+`equipos_ejecutar` acepta el **id de una operación del catálogo** y sus
+parámetros tipados. El catálogo vive en `executor/config/catalog.yml`:
+
+| Operación | Riesgo | Parámetros |
+|---|---|---|
+| `host_uname`, `host_uptime`, `host_disk_free`, `host_mem_free` | read | — |
+| `host_list_dir` | read | `path` |
+| `host_git_status` | read | `path` |
+| `host_git_log` | read | `path`, `count` (1..30) |
+| `host_project_test` | execute | `project_id` |
+
+Lo que no está en el catálogo **no existe**: el Policy Engine lo deniega.
+
+### Policy Engine (deny by default)
+
+Una operación solo se ejecuta si se cumplen **todas** estas reglas:
+
+1. El host existe y está habilitado.
+2. La operación está en el catálogo.
+3. La operación es auto-aprobable (lo demás se deniega: en v0.3 no hay UI de
+   aprobación).
+4. La operación aplica a ese host.
+5. Las rutas caen dentro de las `roots` del host, **resueltas en el host
+   destino** (`readlink -f`), de modo que un symlink que apunte fuera se
+   rechaza.
+6. Los proyectos existen, están habilitados y pertenecen al host.
+
+### SSH endurecido
+
+- **Clave dedicada por host** (`id_ed25519_<host>`), nunca la del usuario.
+- **Verificación estricta de host key**: `known_hosts` fijado de antemano con
+  la clave real del equipo. Nunca TOFU: si la clave no está, no se conecta.
+- **Usuario de sistema dedicado** (`jarvis`) en el equipo destino, no el
+  usuario personal.
+- **Forced command**: la clave del ejecutor lleva
+  `command="/usr/local/libexec/jarvis-ssh-wrapper",restrict`. El wrapper es la
+  última línea de defensa: parsea con `shlex` y solo permite el catálogo
+  dentro de las raíces autorizadas. Rechaza `sh`, `rm`, rutas fuera de raíz y
+  `env` en cualquier forma que no sea `-C <dir>`.
+- **Sin shell**: el argv se cita con `shlex.quote` antes de enviarlo por el
+  canal `exec` (que el shell remoto interpreta).
+- **Sin reintentos duplicados**: solo se reintenta la *conexión*; una orden ya
+  entregada no se repite.
+
+### Pruebas
+
+`executor/tests/` — 31 pruebas (`docker build --target test`):
+
+- denegaciones: operación inexistente, host deshabilitado, operación no
+  auto-aprobable, host no aplicable, proyecto de otro host, sin suite de tests
+- rutas prohibidas: fuera de raíz, con `..`, relativas, symlink que escapa
+- ejecución: comando inexistente, exit != 0, timeout, inyección de shell
+  (`echo "a; id"` llega literal), **orden ejecutada una sola vez**
+- SSH: host inalcanzable, sin `known_hosts`, sin clave, sin dirección
+
+### Pendiente
+
+- **PC Xeon (Linux Mint)**: no aparece en la tailnet. El registro lo tiene
+  como `desktop` **deshabilitado** hasta que se configure su dirección real.
+- **Aprobación humana**: las operaciones no auto-aprobables se deniegan; falta
+  la UI para aprobarlas.
+- **Segunda ubicación de respaldos**: hoy `/mnt/data/nas/backups` está en el
+  mismo disco HGST que los datos: protege de errores lógicos, no de la
+  fallo del disco.
 
 ## Endurecimiento (Fase A aplicada)
 

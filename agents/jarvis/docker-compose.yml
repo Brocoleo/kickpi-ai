@@ -65,6 +65,46 @@ services:
       retries: 3
       start_period: 15s
 
+  jarvis-executor:
+    build: ./executor
+    image: jarvis-executor:0.3
+    container_name: jarvis-executor
+    restart: unless-stopped
+    environment:
+      JARVIS_EXECUTOR_TOKEN: ${JARVIS_EXECUTOR_TOKEN:?define JARVIS_EXECUTOR_TOKEN en .env}
+      JARVIS_EXECUTOR_HOSTS_FILE: /app/config/hosts.yml
+      JARVIS_EXECUTOR_CATALOG_FILE: /app/config/catalog.yml
+      JARVIS_EXECUTOR_SSH_DIR: /app/ssh
+      JARVIS_EXECUTOR_AUDIT_DB: /data/audit.db
+      # asyncssh necesita un usuario local para resolver rutas con '~'.
+      USER: jarvis
+      LOGNAME: jarvis
+      HOME: /tmp
+    volumes:
+      - /mnt/data/docker/executor_data:/data
+      # Claves SSH privadas y known_hosts: solo lectura, nunca salen del disco.
+      - /mnt/data/docker/executor_ssh:/app/ssh:ro
+      - ./executor/config:/app/config:ro
+    expose:
+      - "8000"
+    networks:
+      - jarvis
+    security_opt:
+      - no-new-privileges:true
+    # Sin root, sin capacidades, sistema de ficheros de solo lectura.
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8000/health\",timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   jarvis-agent:
     build: ./agent
     image: jarvis-agent:0.1
@@ -77,6 +117,8 @@ services:
       JARVIS_API_TOKEN: ${JARVIS_API_TOKEN:?define JARVIS_API_TOKEN en .env}
       JARVIS_TOOLS_TOKEN: ${JARVIS_TOOLS_TOKEN:?define JARVIS_TOOLS_TOKEN en .env}
       JARVIS_TOOLS_URL: http://jarvis-tools:8000
+      JARVIS_EXECUTOR_TOKEN: ${JARVIS_EXECUTOR_TOKEN:?define JARVIS_EXECUTOR_TOKEN en .env}
+      JARVIS_EXECUTOR_URL: http://jarvis-executor:8000
       JARVIS_LLM_BASE_URL: ${JARVIS_LLM_BASE_URL:-https://openrouter.ai/api/v1}
       JARVIS_LLM_API_KEY: ${JARVIS_LLM_API_KEY:-}
       JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}

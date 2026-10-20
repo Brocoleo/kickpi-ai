@@ -124,3 +124,13 @@ export function ShieldIcon(props: IconProps) {
     </Base>
   );
 }
+
+export function DeviceIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="2" y="4" width="14" height="10" rx="1.6" />
+      <path d="M6 19h6M9 14v5" />
+      <path d="M18 9h4v10h-4zM20 9V6" />
+    </Base>
+  );
+}

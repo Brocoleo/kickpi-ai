@@ -1,0 +1,86 @@
+# ============================================================================
+# Catalogo de operaciones — Jarvis Executor
+# ----------------------------------------------------------------------------
+# Lo que NO esta aqui NO se puede ejecutar. Ni por el LLM, ni por el agente.
+#
+#   auto: true   -> se puede ejecutar sin aprobacion humana (solo lectura o
+#                   una suite de tests predefinida de un proyecto autorizado).
+#   auto: false  -> requiere aprobacion explicita. En V0.3 no hay UI de
+#                   aprobacion, asi que el Policy Engine lo DENIEGA.
+#
+# `command` se pasa como argv (nunca como linea de shell). Los marcadores
+# {path} y {count} los resuelve el Policy Engine tras validarlos.
+# ============================================================================
+version: 1
+
+operations:
+  - id: host_uname
+    title: "Version del kernel"
+    description: "Kernel y arquitectura del equipo."
+    risk: read
+    auto: true
+    command: ["uname", "-a"]
+    timeout: 15
+
+  - id: host_uptime
+    title: "Tiempo activo y carga"
+    description: "Uptime y carga media del equipo."
+    risk: read
+    auto: true
+    command: ["uptime"]
+    timeout: 15
+
+  - id: host_disk_free
+    title: "Espacio en disco"
+    description: "Uso de los sistemas de ficheros montados."
+    risk: read
+    auto: true
+    command: ["df", "-h", "-x", "tmpfs", "-x", "devtmpfs"]
+    timeout: 20
+
+  - id: host_mem_free
+    title: "Memoria"
+    description: "Uso de RAM y swap."
+    risk: read
+    auto: true
+    command: ["free", "-h"]
+    timeout: 15
+
+  - id: host_list_dir
+    title: "Listar directorio autorizado"
+    description: "Contenido de un directorio dentro de las raices autorizadas."
+    risk: read
+    auto: true
+    command: ["ls", "-la", "--time-style=long-iso", "{path}"]
+    path_param: path
+    timeout: 20
+
+  - id: host_git_status
+    title: "Estado de git"
+    description: "Rama y ficheros modificados de un repositorio autorizado."
+    risk: read
+    auto: true
+    command: ["git", "-C", "{path}", "status", "--porcelain=v1", "--branch"]
+    path_param: path
+    timeout: 30
+
+  - id: host_git_log
+    title: "Ultimos commits"
+    description: "Ultimos commits de un repositorio autorizado."
+    risk: read
+    auto: true
+    command: ["git", "-C", "{path}", "log", "-n", "{count}", "--oneline"]
+    path_param: path
+    int_param: count
+    int_param_max: 30
+    timeout: 30
+
+  - id: host_project_test
+    title: "Ejecutar los tests de un proyecto autorizado"
+    description: >-
+      Ejecuta la suite de tests predefinida del proyecto. Es la unica
+      operacion que ejecuta codigo del equipo remoto.
+    risk: execute
+    auto: true
+    project_param: project_id
+    timeout: 240

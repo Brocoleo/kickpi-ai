@@ -11,6 +11,9 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from .config import get_settings
+from .executor_client import TOOL_NAMES as EXECUTOR_TOOL_NAMES
+from .executor_client import TOOL_SPECS as EXECUTOR_TOOL_SPECS
+from .executor_client import ExecutorError, call_executor
 from .llm import LLMError, chat_completion
 from .memory import add_audit
 from .tools_client import TOOL_SPECS, ToolsError, call_tool
@@ -29,6 +32,8 @@ def _summarize(result: dict) -> str:
         return "ok"
     if "error" in result:
         return f"error: {result['error']}"
+    if result.get("denied"):
+        return f"denegado: {result.get('reason')}"
     if "containers" in result:
         return f"{result.get('count')} contenedores"
     if "disks" in result:
@@ -37,6 +42,14 @@ def _summarize(result: dict) -> str:
         return f"logs de {result.get('container')} ({result.get('tail')} líneas)"
     if "cpu" in result:
         return f"CPU {result['cpu']['percent_total']}% · RAM {result['memory']['percent']}%"
+    if "hosts" in result:
+        return f"{result.get('count')} equipos registrados"
+    if "executions" in result:
+        return f"{result.get('count')} ejecuciones"
+    if "stdout" in result:
+        first = (result.get("stdout") or "").strip().splitlines()
+        head = first[0][:80] if first else ""
+        return f"exit={result.get('exit_code')} {head}"
     return "ok"
 
 
@@ -44,7 +57,9 @@ async def _call_model(state: AgentState) -> dict:
     messages = state["messages"]
     iterations = state.get("iterations", 0) + 1
     try:
-        msg, model_used = await chat_completion(messages, tools=TOOL_SPECS)
+        msg, model_used = await chat_completion(
+            messages, tools=list(TOOL_SPECS) + list(EXECUTOR_TOOL_SPECS)
+        )
     except LLMError as exc:
         # Degradamos con elegancia: el usuario ve el motivo, no un 500.
         msg = {"role": "assistant", "content": f"⚠️ No pude consultar el modelo: {exc}"}
@@ -72,8 +87,11 @@ async def _run_tools(state: AgentState) -> dict:
         started = time.monotonic()
         ok = True
         try:
-            result = await call_tool(name, args)
-        except ToolsError as exc:
+            if name in EXECUTOR_TOOL_NAMES:
+                result = await call_executor(name, args)
+            else:
+                result = await call_tool(name, args)
+        except (ToolsError, ExecutorError) as exc:
             result = {"error": str(exc)}
             ok = False
         duration = int((time.monotonic() - started) * 1000)

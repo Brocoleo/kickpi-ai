@@ -3,6 +3,7 @@ import type {
   ChatResponse,
   Containers,
   Disks,
+  Equipos,
   Health,
   LlmStatus,
   StoredMessage,
@@ -71,6 +72,8 @@ export const api = {
   disks: () => api.tool<Disks>("disk_usage"),
   containers: () => api.tool<Containers>("docker_ps"),
   llmStatus: () => request<LlmStatus>("/llm/status"),
+
+  equipos: () => request<Equipos>("/equipos"),
 
   conversation: (id: string) =>
     request<{ conversation_id: string; messages: StoredMessage[] }>(

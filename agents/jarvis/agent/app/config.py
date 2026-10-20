@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     tools_token: str = ""
     tools_timeout: float = 15.0
 
+    # --- Servicio de ejecucion multi-host (Policy Engine) ---
+    executor_url: str = "http://jarvis-executor:8000"
+    executor_token: str = ""
+    executor_timeout: float = 90.0
+
     # --- Persistencia y límites ---
     data_dir: str = "/data"
     history_limit: int = 20
@@ -73,8 +78,8 @@ def get_settings() -> Settings:
 
 SYSTEM_PROMPT = """\
 Eres Jarvis, el asistente de un mini-servidor doméstico (KICKPI K2B V2 con \
-Debian 13, Docker, Tailscale y un NAS en preparación). Hablas con tu \
-administrador a través de una app privada.
+Debian 13, Docker, Tailscale y un NAS). Hablas con tu administrador a través \
+de una app privada.
 
 Reglas:
 - Responde SIEMPRE en el idioma del usuario (por defecto, español).
@@ -82,9 +87,16 @@ Reglas:
 USA las herramientas disponibles. NUNCA inventes cifras ni estados.
 - Si una herramienta falla o no está disponible, dilo claramente y no \
 rellenes con suposiciones.
-- Solo tienes herramientas de LECTURA. No puedes reiniciar, borrar, crear ni \
-modificar nada. Si te lo piden, explícalo y sugiere el comando que el \
-administrador debería ejecutar manualmente.
+- Puedes trabajar con OTROS EQUIPOS (MacBook, PC de escritorio) mediante las \
+herramientas `equipos_*`. Estas NO aceptan comandos de shell: solo \
+operaciones de un catálogo autorizado (leer estado, listar un directorio \
+permitido, ver el estado de git, ejecutar la suite de tests de un proyecto \
+autorizado). Si pides algo fuera del catálogo, el sistema lo deniega y te \
+lo dirá: entonces explica qué sí es posible.
+- NUNCA afirmes que has ejecutado algo si la herramienta lo denegó o falló.
+- No puedes reiniciar, apagar, borrar, instalar ni ejecutar nada como root, \
+ni en este servidor ni en los equipos remotos. Si te lo piden, explícalo y \
+sugiere el comando que el administrador debería ejecutar manualmente.
 - Sé breve y concreto. Usa listas cortas con viñetas.
 - NO uses tablas Markdown: se leen mal en pantalla de móvil.
 """

@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Filtro de comandos SSH para Jarvis (forced command).
+
+Se instala en el EQUIPO DESTINO y se invoca como `command=` en el
+authorized_keys de la clave del ejecutor. Es la ULTIMA linea de defensa:
+aunque el contenedor del ejecutor se comprometiera, esta clave solo puede
+ejecutar el catalogo autorizado, sobre las raices autorizadas.
+
+No usa shell: parsea con shlex y decide sobre el argv.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import sys
+
+CONFIG = os.environ.get("JARVIS_SSH_ALLOWLIST", "/home/leandro/.local/share/jarvis/allowlist.json")
+
+# Ejecutables permitidos. Nada de 'sh', 'bash', 'env' libre ni interpretes:
+# eso permitiria ejecutar cualquier cosa.
+ALLOWED_BINARIES = {
+    "uname", "uptime", "df", "free", "ls", "git", "node", "npm",
+    "make", "readlink", "wc", "cat", "head", "tail", "grep", "find",
+}
+
+
+def die(message: str, code: int = 1) -> "None":
+    sys.stderr.write(f"jarvis-ssh-wrapper: {message}\n")
+    raise SystemExit(code)
+
+
+def main() -> None:
+    original = os.environ.get("SSH_ORIGINAL_COMMAND", "")
+    if not original.strip():
+        die("sin comando")
+
+    try:
+        with open(CONFIG, encoding="utf-8") as fh:
+            config = json.load(fh)
+    except Exception as exc:
+        die(f"no se pudo leer la lista permitida: {exc}")
+
+    roots: list[str] = config.get("roots") or []
+    binaries: set[str] = set(config.get("binaries") or []) or ALLOWED_BINARIES
+
+    try:
+        argv = shlex.split(original)
+    except ValueError as exc:
+        die(f"comando no parseable: {exc}")
+
+    if not argv:
+        die("comando vacio")
+
+    program = os.path.basename(argv[0])
+
+    # `env -C <dir> <cmd>`: unica forma de env permitida. Se comprueba el
+    # directorio y se extrae el comando real, que despues se valida como
+    # cualquier otro. 'env' NO esta en la lista de binarios: fuera de esta
+    # forma se rechaza.
+    if program == "env":
+        if len(argv) < 4 or argv[1] != "-C":
+            die("uso de env no permitido (solo 'env -C <dir> <cmd>')")
+        directory = argv[2]
+        if not any(_within(directory, root) for root in roots):
+            die(f"directorio fuera de las raices permitidas: {directory}")
+        argv = argv[3:]
+        if not argv:
+            die("comando vacio tras env -C")
+        program = os.path.basename(argv[0])
+
+    if program not in binaries:
+        die(f"ejecutable no permitido: {program}")
+
+    # Cualquier argumento que parezca una ruta absoluta debe caer en las
+    # raices permitidas. Los relatives se resuelven contra el cwd validado.
+    for token in argv[1:]:
+        if token.startswith("/") and not any(_within(token, root) for root in roots):
+            die(f"ruta fuera de las raices permitidas: {token}")
+        if "\n" in token or "\x00" in token:
+            die("caracteres no permitidos en un argumento")
+
+    sys.stderr.write(f"jarvis-ssh-wrapper: permitido -> {original}\n")
+    os.execvp(argv[0], argv)
+
+
+def _within(path: str, root: str) -> bool:
+    if path == root:
+        return True
+    return path.startswith(root.rstrip("/") + "/")
+
+
+if __name__ == "__main__":
+    main()

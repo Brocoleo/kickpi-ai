@@ -91,3 +91,39 @@ export type Health = {
   tools_reachable: boolean;
   pwa: boolean;
 };
+
+/* --- Equipos (ejecutor multi-host) ------------------------------------- */
+
+export type Equipo = {
+  id: string;
+  label: string;
+  transport: "local" | "ssh";
+  enabled: boolean;
+  address: string | null;
+  os: string;
+  roots: string[];
+  online?: boolean;
+  reason?: string;
+  kernel?: string;
+  latency_ms?: number;
+};
+
+export type Ejecucion = {
+  id: number;
+  created_at: string;
+  host_id: string;
+  operation: string;
+  params_json: string | null;
+  allowed: number;
+  ok: number;
+  exit_code: number | null;
+  duration_ms: number | null;
+  output_excerpt: string | null;
+  error: string | null;
+};
+
+export type Equipos = {
+  hosts: Equipo[];
+  executions: Ejecucion[];
+  count: number;
+};

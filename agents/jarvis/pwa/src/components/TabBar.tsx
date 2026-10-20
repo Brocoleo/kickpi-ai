@@ -1,10 +1,11 @@
-import { ChatIcon, FolderIcon, PulseIcon, SlidersIcon } from "./icons";
+import { ChatIcon, DeviceIcon, FolderIcon, PulseIcon, SlidersIcon } from "./icons";
 
-export type Tab = "chat" | "metrics" | "files" | "settings";
+export type Tab = "chat" | "metrics" | "equipos" | "files" | "settings";
 
 const TABS: { id: Tab; label: string; Icon: typeof ChatIcon }[] = [
   { id: "chat", label: "Chat", Icon: ChatIcon },
   { id: "metrics", label: "Métricas", Icon: PulseIcon },
+  { id: "equipos", label: "Equipos", Icon: DeviceIcon },
   { id: "files", label: "Archivos", Icon: FolderIcon },
   { id: "settings", label: "Ajustes", Icon: SlidersIcon },
 ];
