@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client ca-certificates \
+    && apt-get install -y --no-install-recommends openssh-client git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -30,7 +30,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # openssh-client: el ejecutor es cliente SSH.
 # No se instala openssh-server: este servicio no debe ser alcanzable por SSH.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client ca-certificates \
+    && apt-get install -y --no-install-recommends openssh-client git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
