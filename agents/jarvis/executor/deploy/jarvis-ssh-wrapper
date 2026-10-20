@@ -16,7 +16,15 @@ import shlex
 import subprocess
 import sys
 
-CONFIG = os.environ.get("JARVIS_SSH_ALLOWLIST", "/home/leandro/.local/share/jarvis/allowlist.json")
+# Rutas candidatas del allow-list. La primera es la que deja el instalador
+# (/home/jarvis/...): el usuario de servicio 'jarvis' no puede leer el home
+# del usuario personal, asi que el orden importa.
+CONFIG_CANDIDATES = [
+    os.environ.get("JARVIS_SSH_ALLOWLIST", ""),
+    "/home/jarvis/.local/share/jarvis/allowlist.json",
+    "/home/leandro/.local/share/jarvis/allowlist.json",
+]
+CONFIG = next((c for c in CONFIG_CANDIDATES if c and os.path.isfile(c)), CONFIG_CANDIDATES[1])
 
 # Ejecutables permitidos. Nada de 'sh', 'bash', 'env' libre ni interpretes:
 # eso permitiria ejecutar cualquier cosa.

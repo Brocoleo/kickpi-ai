@@ -37,6 +37,9 @@ fi
 
 WRAPPER_SRC="$ORIGINAL_HOME/.local/share/jarvis/jarvis-ssh-wrapper"
 ALLOWLIST_SRC="$ORIGINAL_HOME/.local/share/jarvis/allowlist.json"
+# Clave publica del ejecutor: fuente unica, en un fichero dedicado (no en
+# authorized_keys, que es del usuario personal).
+PUBKEY_SRC="$ORIGINAL_HOME/.local/share/jarvis/executor.pub"
 WRAPPER_DST=/usr/local/libexec/jarvis-ssh-wrapper
 ALLOWLIST_DST=/home/jarvis/.local/share/jarvis/allowlist.json
 KEY_COMMENT="jarvis-executor-macbook"
@@ -101,9 +104,13 @@ if [ ! -f "$ALLOWLIST_SRC" ]; then
   echo "      ERROR: no encuentro el allow-list en $ALLOWLIST_SRC" >&2
   exit 1
 fi
+# /usr/local/libexec NO existe de serie en Ubuntu (convencion de Debian).
+install -d -o root -g root -m 0755 "$(dirname "$WRAPPER_DST")"
 install -o root -g root -m 0755 "$WRAPPER_SRC" "$WRAPPER_DST"
 install -d -o jarvis -g jarvis -m 0750 /home/jarvis/.local/share/jarvis
 install -o root -g jarvis -m 0640 "$ALLOWLIST_SRC" "$ALLOWLIST_DST"
+echo "      wrapper en $WRAPPER_DST"
+echo "      allow-list en $ALLOWLIST_DST"
 
 echo "[7/8] Instalando la clave del ejecutor con command= y restrict..."
 mkdir -p /home/jarvis/.ssh
@@ -112,11 +119,20 @@ chmod 700 /home/jarvis/.ssh
 touch /home/jarvis/.ssh/authorized_keys
 # Solo se conserva la clave de Jarvis (filtra por comentario).
 grep -v "$KEY_COMMENT" /home/jarvis/.ssh/authorized_keys > /tmp/.jarvis_ak 2>/dev/null || true
-KEYLINE=$(grep "$KEY_COMMENT" "$ORIGINAL_HOME/.ssh/authorized_keys" | head -1)
+KEYLINE=""
+if [ -f "$PUBKEY_SRC" ]; then
+  KEYLINE=$(grep "$KEY_COMMENT" "$PUBKEY_SRC" | head -1)
+fi
 if [ -z "$KEYLINE" ]; then
-  echo "      ERROR: no encuentro la clave '$KEY_COMMENT' en $ORIGINAL_HOME/.ssh/authorized_keys" >&2
+  # Respaldo: la clave tambien puede estar en el authorized_keys del usuario.
+  KEYLINE=$(grep "$KEY_COMMENT" "$ORIGINAL_HOME/.ssh/authorized_keys" 2>/dev/null | head -1 || true)
+fi
+if [ -z "$KEYLINE" ]; then
+  echo "      ERROR: no encuentro la clave publica del ejecutor" >&2
+  echo "             esperado en: $PUBKEY_SRC" >&2
   exit 1
 fi
+echo "      clave: $(echo "$KEYLINE" | awk '{print $2}')"
 printf 'command="%s",restrict %s\n' "$WRAPPER_DST" "$KEYLINE" >> /tmp/.jarvis_ak
 install -o jarvis -g jarvis -m 0600 /tmp/.jarvis_ak /home/jarvis/.ssh/authorized_keys
 rm -f /tmp/.jarvis_ak
@@ -134,6 +150,11 @@ echo "  config valida:      $(sshd -t 2>&1 && echo 'sshd -t OK' || echo 'ERROR')
 echo "  listener en :22:    $(ss -lnt | grep -c ':22 ') "
 echo "  jarvis sin sudo:    $(id -nG jarvis | tr ' ' '\n' | grep -qx sudo && echo 'MAL' || echo 'correcto')"
 echo "  authorized_keys:    $(awk '{print $1}' /home/jarvis/.ssh/authorized_keys)"
+echo "  wrapper instalado:  $([ -x "$WRAPPER_DST" ] && echo 'si' || echo 'FALTA')"
+echo "  allow-list:         $([ -r "$ALLOWLIST_DST" ] && echo 'si' || echo 'FALTA')"
+echo "  home de jarvis:     $(getent passwd jarvis | cut -d: -f6)"
+echo "  shell de jarvis:    $(getent passwd jarvis | cut -d: -f7)"
+echo "  claves en jarvis:   $(grep -c . /home/jarvis/.ssh/authorized_keys 2>/dev/null || echo 0)"
 echo "  ACL en el home:     $(getfacl -p "$ORIGINAL_HOME" 2>/dev/null | grep -E 'user:jarvis' | tr -s ' ')"
 echo
 echo "  Host key ed25519 (la que se fijara en known_hosts):"
