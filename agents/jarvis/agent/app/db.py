@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- Sujeto (usuario humano) de cada sesion. Tabla aparte para NO alterar la
+-- tabla `sessions` ya existente en produccion: solo se anade una tabla
+-- nueva, que es una migracion aditiva y sin perdida de datos.
+CREATE TABLE IF NOT EXISTS session_subjects (
+    fingerprint  TEXT PRIMARY KEY,   -- SHA-256 del token de sesion
+    subject      TEXT NOT NULL,      -- identidad humana (p.ej. "leandro")
+    created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_subjects_created ON session_subjects(created_at);
 """
 
 

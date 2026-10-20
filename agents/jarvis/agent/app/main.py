@@ -13,13 +13,21 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from . import memory, sessions
-from .auth import auth_method, require_auth
+from . import approvals_client, memory, sessions
+from .approvals_client import ApprovalsError
+from .auth import (
+    auth_method,
+    require_auth,
+    require_human_mutation,
+    require_human_session,
+    session_fingerprint_of,
+)
 from .config import SYSTEM_PROMPT, get_settings
+from .csrf import check_origin, issue_token
 from .db import init_db
 from .graph import AGENT
 from .llm import CIRCUIT
@@ -129,8 +137,13 @@ async def health() -> dict:
 # Autenticación de navegador
 # --------------------------------------------------------------------------- #
 @app.post("/api/auth/login", tags=["auth"])
-async def login(body: LoginRequest, response: Response) -> dict:
+async def login(body: LoginRequest, request: Request, response: Response) -> dict:
     settings = get_settings()
+
+    # Login es una operacion que cambia estado (crea una sesion): se valida
+    # el origen para que una pagina ajena no pueda iniciar sesion en el
+    # navegador del administrador.
+    check_origin(request)
 
     if not login_allowed():
         raise HTTPException(429, "Demasiados intentos fallidos. Espera unos minutos.")
@@ -142,8 +155,9 @@ async def login(body: LoginRequest, response: Response) -> dict:
 
     reset_login_failures()
     token = new_session_token()
+    fingerprint = session_fingerprint(token)
     await asyncio.to_thread(
-        sessions.create, session_fingerprint(token), settings.session_ttl_days
+        sessions.create, fingerprint, settings.session_ttl_days, settings.admin_user
     )
     response.set_cookie(
         key=settings.cookie_name,
@@ -154,13 +168,21 @@ async def login(body: LoginRequest, response: Response) -> dict:
         samesite="strict",
         path="/",
     )
+    # El token CSRF viaja en el cuerpo de la respuesta (queda en memoria en
+    # el navegador, nunca en localStorage) y esta ligado a ESTA sesion.
+    csrf_token = issue_token(fingerprint)
     log.info("login correcto (sesión de %d días)", settings.session_ttl_days)
-    return {"ok": True, "expires_days": settings.session_ttl_days}
+    return {
+        "ok": True,
+        "expires_days": settings.session_ttl_days,
+        "csrf_token": csrf_token,
+    }
 
 
 @app.post("/api/auth/logout", tags=["auth"])
 async def logout(request: Request, response: Response) -> dict:
     settings = get_settings()
+    check_origin(request)
     token = request.cookies.get(settings.cookie_name)
     if token:
         await asyncio.to_thread(
@@ -174,13 +196,20 @@ async def logout(request: Request, response: Response) -> dict:
 async def me(request: Request) -> dict:
     settings = get_settings()
     method = auth_method(request)
-    return {
+    payload = {
         "authenticated": method is not None,
         "method": method,
         "password_configured": bool(settings.admin_password_hash),
         "session_ttl_days": settings.session_ttl_days,
         "version": VERSION,
     }
+    # El token CSRF se entrega de nuevo tras recargar la PWA: es la misma
+    # sesion, asi que el token es identico (HMAC de la huella de sesion).
+    if method == "session":
+        fingerprint = session_fingerprint_of(request)
+        payload["csrf_token"] = issue_token(fingerprint) if fingerprint else ""
+        payload["user"] = sessions.subject(fingerprint) if fingerprint else None
+    return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -253,6 +282,144 @@ async def llm_status() -> dict:
             "total_budget_s": settings.llm_total_budget,
         },
     }
+
+
+# --------------------------------------------------------------------------- #
+# Aprobaciones humanas (proxy autenticado hacia el ejecutor)
+# --------------------------------------------------------------------------- #
+# Separación estricta respecto a las herramientas del LLM:
+#   - las tools `equipos_*` van al ejecutor con X-Executor-Token y NUNCA
+#     pueden alcanzar estas rutas;
+#   - estas rutas exigen SESIÓN DE NAVEGADOR (no vale el token de API) y,
+#     si cambian estado, además Origin estricto + token CSRF ligado a la
+#     sesión;
+#   - el token de aprobaciones del ejecutor no sale nunca del backend.
+# --------------------------------------------------------------------------- #
+
+
+class RejectBody(BaseModel):
+    """El navegador NO puede enviar la identidad: esa la deriva la sesión."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=500)
+
+
+class EmptyBody(BaseModel):
+    """Cuerpo vacío: impide ejecutar una aprobación con otros parámetros."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@app.get("/api/aprobaciones", tags=["aprobaciones"],
+         dependencies=[Depends(require_human_session)])
+async def list_aprobaciones(
+    status_filter: str | None = Query(default=None, alias="status"),
+    host: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Solicitudes de aprobación visibles para el humano autenticado."""
+    try:
+        data = await approvals_client.list_approvals(status_filter, host, limit)
+    except ApprovalsError as exc:
+        raise approvals_client.to_http_error(exc) from exc
+    return {
+        "approvals": data.get("approvals") or [],
+        "count": data.get("count", 0),
+    }
+
+
+@app.get("/api/aprobaciones/{approval_id}", tags=["aprobaciones"],
+         dependencies=[Depends(require_human_session)])
+async def get_aprobacion(approval_id: str) -> dict:
+    try:
+        data = await approvals_client.get_approval(approval_id)
+    except ApprovalsError as exc:
+        raise approvals_client.to_http_error(exc) from exc
+    return data
+
+
+@app.post("/api/aprobaciones/{approval_id}/aprobar", tags=["aprobaciones"])
+async def aprobar_aprobacion(
+    approval_id: str,
+    body: EmptyBody | None = None,
+    subject: str = Depends(require_human_mutation),
+) -> dict:
+    """Aprueba una solicitud. La identidad la pone la SESIÓN, no el
+    navegador: el cuerpo de la petición no puede contener `approved_by`
+    (ni nada más: se rechaza con 422)."""
+    started = time.monotonic()
+    try:
+        data = await approvals_client.approve(approval_id, subject)
+    except ApprovalsError as exc:
+        raise approvals_client.to_http_error(exc) from exc
+
+    await asyncio.to_thread(
+        memory.add_audit,
+        "aprobacion:aprobar",
+        {"approval_id": approval_id},
+        True,
+        int((time.monotonic() - started) * 1000),
+        f"aprobada por {subject}",
+        None,
+    )
+    return data
+
+
+@app.post("/api/aprobaciones/{approval_id}/rechazar", tags=["aprobaciones"])
+async def rechazar_aprobacion(
+    approval_id: str,
+    body: RejectBody | None = None,
+    subject: str = Depends(require_human_mutation),
+) -> dict:
+    """Rechaza una solicitud (la identidad también la pone la sesión)."""
+    started = time.monotonic()
+    reason = body.reason if body else ""
+    try:
+        data = await approvals_client.reject(approval_id, subject, reason)
+    except ApprovalsError as exc:
+        raise approvals_client.to_http_error(exc) from exc
+
+    await asyncio.to_thread(
+        memory.add_audit,
+        "aprobacion:rechazar",
+        {"approval_id": approval_id, "reason": reason},
+        True,
+        int((time.monotonic() - started) * 1000),
+        f"rechazada por {subject}",
+        None,
+    )
+    return data
+
+
+@app.post("/api/aprobaciones/{approval_id}/ejecutar", tags=["aprobaciones"])
+async def ejecutar_aprobacion(
+    approval_id: str,
+    body: EmptyBody | None = None,
+    subject: str = Depends(require_human_mutation),
+) -> dict:
+    """Ejecuta una solicitud ya aprobada.
+
+    El cuerpo DEBE estar vacío: los parámetros los toma el ejecutor de lo
+    persistido y verificado. Un solo uso garantizado por el ejecutor (reclamo
+    atómico); si ya se consumió, responde 409.
+    """
+    started = time.monotonic()
+    try:
+        data = await approvals_client.execute(approval_id)
+    except ApprovalsError as exc:
+        raise approvals_client.to_http_error(exc) from exc
+
+    await asyncio.to_thread(
+        memory.add_audit,
+        "aprobacion:ejecutar",
+        {"approval_id": approval_id},
+        bool(data.get("ok")),
+        int((time.monotonic() - started) * 1000),
+        f"ejecutada por {subject}: {data.get('state')}",
+        None,
+    )
+    return data
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,19 @@ class Settings(BaseSettings):
     cookie_name: str = "jarvis_session"
     cookie_secure: bool = True
     static_dir: str = "/app/static"
+    # Identidad humana que se registra en las sesiones (quien aprueba).
+    # Es configurable con JARVIS_ADMIN_USER.
+    admin_user: str = "leandro"
+
+    # --- CSRF y origenes ---
+    # Secreto para el HMAC del token CSRF. Si se deja vacio, se deriva del
+    # JARVIS_API_TOKEN o del hash de la contraseña (ambos son secretos del
+    # servidor). Fijarlo explicitamente es una mejora futura.
+    csrf_secret: str = ""
+    # Orígenes admitidos en las rutas que cambian estado, separados por
+    # comas. Si se deja vacio, se acepta el mismo origen de la petición
+    # (comparando host, para funcionar detrás de Tailscale Serve).
+    allowed_origins: str = ""
 
     # --- LLM compatible con OpenAI (OpenRouter, OpenAI, Groq...) ---
     llm_base_url: str = "https://openrouter.ai/api/v1"
@@ -49,6 +62,10 @@ class Settings(BaseSettings):
     executor_url: str = "http://jarvis-executor:8000"
     executor_token: str = ""
     executor_timeout: float = 90.0
+    # Token DEDICADO a las aprobaciones humanas. Solo lo usa el proxy
+    # autenticado de la PWA: nunca viaja al navegador, ni a los logs, ni a
+    # las herramientas del LLM.
+    approvals_token: str = ""
 
     # --- Persistencia y límites ---
     data_dir: str = "/data"
@@ -94,6 +111,10 @@ permitido, ver el estado de git, ejecutar la suite de tests de un proyecto \
 autorizado). Si pides algo fuera del catálogo, el sistema lo deniega y te \
 lo dirá: entonces explica qué sí es posible.
 - NUNCA afirmes que has ejecutado algo si la herramienta lo denegó o falló.
+- Algunas operaciones exigen APROBACIÓN HUMANA. Cuando eso ocurre, la \
+herramienta no ejecuta nada: crea una solicitud pendiente y te devuelve su \
+identificador. Tú NO puedes aprobar ni rechazar solicitudes: solo debes \
+decir al usuario que la apruebe en la app (pestaña Aprobaciones) y esperar.
 - No puedes reiniciar, apagar, borrar, instalar ni ejecutar nada como root, \
 ni en este servidor ni en los equipos remotos. Si te lo piden, explícalo y \
 sugiere el comando que el administrador debería ejecutar manualmente.

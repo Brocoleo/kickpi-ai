@@ -34,6 +34,12 @@ def _summarize(result: dict) -> str:
         return f"error: {result['error']}"
     if result.get("denied"):
         return f"denegado: {result.get('reason')}"
+    if result.get("state") == "pending_approval":
+        approval = result.get("approval") or {}
+        return (
+            f"solicitud de aprobacion pendiente "
+            f"({approval.get('id', '?')}) para el usuario"
+        )
     if "containers" in result:
         return f"{result.get('count')} contenedores"
     if "disks" in result:

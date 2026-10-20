@@ -14,7 +14,7 @@ def _iso(value: dt.datetime) -> str:
     return value.astimezone(dt.timezone.utc).strftime(_FMT)
 
 
-def create(fingerprint: str, ttl_days: int) -> None:
+def create(fingerprint: str, ttl_days: int, subject: str = "admin") -> None:
     now = _now()
     expires = now + dt.timedelta(days=ttl_days)
     with session() as conn:
@@ -25,6 +25,22 @@ def create(fingerprint: str, ttl_days: int) -> None:
             " VALUES (?, ?, ?, ?)",
             (fingerprint, _iso(now), _iso(expires), _iso(now)),
         )
+        # Identidad humana de la sesion: es lo que queda como `approved_by`
+        # en una aprobacion. La deriva el servidor, nunca el navegador.
+        conn.execute(
+            "INSERT OR REPLACE INTO session_subjects(fingerprint, subject, created_at)"
+            " VALUES (?, ?, ?)",
+            (fingerprint, subject or "admin", _iso(now)),
+        )
+
+
+def subject(fingerprint: str) -> str | None:
+    """Identidad humana de la sesion (None si no hay)."""
+    with session() as conn:
+        row = conn.execute(
+            "SELECT subject FROM session_subjects WHERE fingerprint = ?", (fingerprint,)
+        ).fetchone()
+    return row["subject"] if row else None
 
 
 def valid(fingerprint: str) -> bool:
@@ -47,6 +63,7 @@ def valid(fingerprint: str) -> bool:
 def delete(fingerprint: str) -> None:
     with session() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (fingerprint,))
+        conn.execute("DELETE FROM session_subjects WHERE fingerprint = ?", (fingerprint,))
 
 
 def purge_expired() -> int:

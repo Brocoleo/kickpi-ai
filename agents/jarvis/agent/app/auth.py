@@ -17,6 +17,7 @@ from fastapi import HTTPException, Request, status
 
 from . import sessions
 from .config import get_settings
+from .csrf import check_csrf, check_origin
 from .security import session_fingerprint
 
 
@@ -63,3 +64,60 @@ async def require_auth(request: Request) -> None:
             "No autenticado",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+# --------------------------------------------------------------------------- #
+# Sesión HUMANA (para las aprobaciones)
+# --------------------------------------------------------------------------- #
+def session_fingerprint_of(request: Request) -> str | None:
+    """Huella de la cookie de sesión (None si no hay cookie)."""
+    settings = get_settings()
+    token = request.cookies.get(settings.cookie_name)
+    if not token:
+        return None
+    return session_fingerprint(token)
+
+
+def require_human_session(request: Request) -> str:
+    """Exige una SESIÓN DE NAVEGADOR y devuelve la identidad humana.
+
+    A diferencia de `require_auth`, el token de API **no** sirve aquí: las
+    decisiones de aprobación son humanas, y el LLM (o un script) no puede
+    tomar esa decisión por su cuenta aunque conozca el token de la API.
+    """
+    settings = get_settings()
+    method = auth_method(request)
+    if method is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "No autenticado: se requiere una sesión de navegador",
+        )
+    if method != "session":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Esta operación exige una sesión de navegador; el token de API no basta",
+        )
+
+    fingerprint = session_fingerprint_of(request)
+    if not fingerprint:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesión no válida")
+
+    subject = sessions.subject(fingerprint) or settings.admin_user
+    return subject
+
+
+def require_human_mutation(request: Request) -> str:
+    """Sesión humana + Origin estricto + token CSRF ligado a esa sesión.
+
+    Es la dependencia de TODA ruta que cambia estado (aprobar, rechazar,
+    ejecutar). Devuelve la identidad humana, que es la que queda registrada
+    como `approved_by` en el ejecutor.
+    """
+    subject = require_human_session(request)
+
+    check_origin(request)
+    fingerprint = session_fingerprint_of(request)
+    if not fingerprint:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesión no válida")
+    check_csrf(request, fingerprint)
+    return subject

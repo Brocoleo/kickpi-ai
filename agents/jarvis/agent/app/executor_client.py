@@ -63,7 +63,10 @@ TOOL_SPECS = [
                 "host_list_dir (parametro 'path'), host_git_status (parametro 'path'), "
                 "host_git_log (parametros 'path' y 'count'), "
                 "host_project_test (parametro 'project_id'). "
-                "Las rutas deben estar dentro de las raices autorizadas del equipo."
+                "Las rutas deben estar dentro de las raices autorizadas del equipo. "
+                "Si la operacion exige aprobacion humana, la herramienta NO la ejecuta: "
+                "crea una solicitud pendiente y te devuelve su identificador. "
+                "Tu no puedes aprobar nada: eso lo hace el usuario en la app."
             ),
             "parameters": {
                 "type": "object",
