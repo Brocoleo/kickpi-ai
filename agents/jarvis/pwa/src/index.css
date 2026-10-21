@@ -1014,6 +1014,24 @@ code {
   transform: scale(0.94);
 }
 
+/* Mientras genera, el mismo botón detiene: un cuadrado, como en un grabador. */
+.stop-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.stop-btn span {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--text);
+}
+
+.retry-btn {
+  align-self: flex-start;
+  margin: 2px 4px 0;
+}
+
 /* --------------------------------------------------------------- metrics */
 .stats-grid {
   display: grid;

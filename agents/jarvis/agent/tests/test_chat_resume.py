@@ -211,3 +211,12 @@ def test_stream_sse_persiste_y_emite_eventos(browser, monkeypatch) -> None:
     assert stored[-1]["role"] == "assistant"
     assert stored[-1]["content"] == "Hola mundo"
     assert sum(1 for m in stored if m["role"] == "assistant") == 1
+
+    # El cierre trae diagnóstico del turno: la PWA y el banco pueden mostrar
+    # duración y número de herramientas sin abrir los logs del contenedor.
+    cierre = re.search(r"event: done\ndata: (\{.*?\})\n\n", body, re.S)
+    assert cierre, body
+    payload = json.loads(cierre.group(1))
+    assert payload["elapsed_ms"] >= 0
+    assert payload["tools_count"] >= 1
+    assert payload["model"]

@@ -49,6 +49,23 @@ def list_conversations(limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def delete_conversation(conv_id: str) -> bool:
+    """Borra la conversación y sus mensajes. False si no existía.
+
+    Los mensajes se borran explícitamente: no se depende del ON DELETE
+    CASCADE, que solo actúa si `PRAGMA foreign_keys` está activo.
+    """
+    with session() as conn:
+        existe = conn.execute(
+            "SELECT 1 FROM conversations WHERE id=?", (conv_id,)
+        ).fetchone()
+        if existe is None:
+            return False
+        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
+        conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Mensajes
 # --------------------------------------------------------------------------- #

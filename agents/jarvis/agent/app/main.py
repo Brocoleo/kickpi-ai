@@ -49,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 
 @asynccontextmanager
@@ -652,6 +652,7 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
     async def event_source():
         queue: asyncio.Queue = asyncio.Queue()
         final_state: dict | None = None
+        started = time.monotonic()
 
         def emit(event: dict) -> None:
             queue.put_nowait(event)
@@ -669,6 +670,9 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
         # El ContextVar lo heredan las tareas que crea el grafo.
         token = STREAM_EMIT.set(emit)
         task = asyncio.create_task(run_graph())
+        # Del turno, no de la conversación: `tool_trace` se acumula entre
+        # turnos, así que no sirve para decir «esta respuesta usó 2».
+        herramientas = 0
         try:
             while True:
                 event = await queue.get()
@@ -681,6 +685,8 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                     break
                 if kind == "__end":
                     break
+                if kind == "tool":
+                    herramientas += 1
                 yield _sse(kind, event)
 
             if final_state is not None:
@@ -694,6 +700,11 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                         "reply": reply,
                         "tool_trace": final_state.get("tool_trace", []),
                         "model": final_state.get("model_used"),
+                        # Diagnóstico del turno: permite ver desde la PWA (y
+                        # desde el banco) cuánto tardó y cuántas herramientas
+                        # usó, sin abrir logs del contenedor.
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                        "tools_count": herramientas,
                     },
                 )
         finally:
@@ -837,6 +848,24 @@ async def get_conversation(conversation_id: str) -> dict:
         raise HTTPException(404, "Conversación no encontrada")
     messages = await asyncio.to_thread(memory.get_timeline, conversation_id)
     return {"conversation_id": conversation_id, "messages": messages}
+
+
+@app.delete(
+    "/api/conversations/{conversation_id}",
+    tags=["chat"],
+    dependencies=[Depends(require_human_mutation)],
+)
+async def delete_conversation(conversation_id: str) -> dict:
+    """Borra una conversación y sus mensajes.
+
+    Exige sesión humana + CSRF (no basta el token de API): es destructivo.
+    Lo usa el banco de pruebas para no dejar basura en el historial, y la PWA
+    cuando el usuario quiere deshacerse de una conversación.
+    """
+    borrada = await asyncio.to_thread(memory.delete_conversation, conversation_id)
+    if not borrada:
+        raise HTTPException(404, "Conversación no encontrada")
+    return {"ok": True, "conversation_id": conversation_id}
 
 
 @app.get("/api/audit", tags=["meta"], dependencies=[Depends(require_auth)])

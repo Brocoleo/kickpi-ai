@@ -83,6 +83,8 @@ type Backend = {
   stream?: string;
   /** Id de la conversación creada por el stream. */
   conversationId?: string;
+  /** Deja la petición colgada (para probar «Detener»). */
+  colgar?: boolean;
 };
 
 async function mockBackend(page: Page, backend: Backend = {}): Promise<void> {
@@ -131,6 +133,10 @@ async function mockBackend(page: Page, backend: Backend = {}): Promise<void> {
     }
 
     if (ruta === "/chat/stream" && peticion.method() === "POST") {
+      if (backend.colgar) {
+        // Nunca responde: el turno queda «en curso» hasta que se aborta.
+        await new Promise(() => {});
+      }
       return route.fulfill({
         status: 200,
         contentType: "text/event-stream",
@@ -319,4 +325,130 @@ test("Equipos muestra el estado de cada host", async ({ page }) => {
   await expect(tarjetaDesktop).toBeVisible();
   await expect(tarjetaDesktop.getByText("sin conexión")).toBeVisible();
   await expect(tarjetaDesktop.getByText("SSH: TimeoutError")).toBeVisible();
+});
+
+test("un stream cortado se avisa y se puede reintentar", async ({ page }) => {
+  // Llega texto, pero nunca el cierre: es lo que pasa si se cae la red o el
+  // proveedor a mitad de respuesta. Antes se veía como una respuesta completa.
+  await mockBackend(page, {
+    stream: sse([
+      ["segment", {}],
+      ["token", { text: "Voy a revisar" }],
+    ]),
+  });
+
+  await page.goto("/");
+  const caja = page.getByPlaceholder(/Escribe a Jarvis/);
+  await caja.fill("¿cómo está el sistema?");
+  await caja.press("Enter");
+
+  await expect(page.getByText(/se cortó antes de terminar/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reintentar" })).toBeVisible();
+});
+
+test("un error del proveedor se puede reintentar", async ({ page }) => {
+  // Primera petición: el proveedor free falla. Segunda: responde.
+  let peticiones = 0;
+
+  await mockBackend(page, {});
+  // Sustituye el stream simulado por uno que falla solo la primera vez.
+  await page.unroute("**/api/chat/stream");
+  await page.route("**/api/chat/stream", async (route) => {
+    peticiones += 1;
+    if (peticiones === 1) {
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: sse([
+          ["segment", {}],
+          ["error", { detail: "el proveedor gratuito no respondió" }],
+        ]),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: sse([
+        ["segment", {}],
+        ["token", { text: "Ahora sí." }],
+        [
+          "done",
+          {
+            conversation_id: "c1",
+            reply: "Ahora sí.",
+            tool_trace: [],
+            model: "test/free",
+          },
+        ],
+      ]),
+    });
+  });
+
+  await page.goto("/");
+  const caja = page.getByPlaceholder(/Escribe a Jarvis/);
+  await caja.fill("¿qué contenedores hay?");
+  await caja.press("Enter");
+
+  await expect(page.getByText(/el proveedor gratuito no respondió/)).toBeVisible();
+  await page.getByRole("button", { name: "Reintentar" }).click();
+
+  await expect(page.getByText("Ahora sí.")).toBeVisible();
+  expect(peticiones).toBe(2);
+});
+
+test("mientras genera se puede detener", async ({ page }) => {
+  await mockBackend(page, { colgar: true });
+
+  await page.goto("/");
+  const caja = page.getByPlaceholder(/Escribe a Jarvis/);
+  await caja.fill("una pregunta que tarda");
+  await caja.press("Enter");
+
+  const detener = page.getByRole("button", { name: "Detener la respuesta" });
+  await expect(detener).toBeVisible();
+  await detener.click();
+
+  // Al abortar, el compositor vuelve a estar disponible y no queda un turno
+  // colgado esperando para siempre.
+  await expect(page.getByRole("button", { name: "Enviar mensaje" })).toBeVisible();
+});
+
+test("muestra el diagnóstico del turno al cerrar", async ({ page }) => {
+  await mockBackend(page, {
+    stream: sse([
+      ["segment", {}],
+      [
+        "tool",
+        {
+          tool: "system_stats",
+          arguments: {},
+          ok: true,
+          duration_ms: 12,
+          summary: "CPU 5%",
+        },
+      ],
+      ["segment", {}],
+      ["token", { text: "Todo tranquilo." }],
+      [
+        "done",
+        {
+          conversation_id: "c1",
+          reply: "Todo tranquilo.",
+          tool_trace: [],
+          model: "test/free",
+          elapsed_ms: 1234,
+          tools_count: 1,
+        },
+      ],
+    ]),
+  });
+
+  await page.goto("/");
+  const caja = page.getByPlaceholder(/Escribe a Jarvis/);
+  await caja.fill("¿cómo está el sistema?");
+  await caja.press("Enter");
+
+  await expect(page.getByText("Todo tranquilo.")).toBeVisible();
+  // Modelo · duración · herramientas, todo en la misma línea de diagnóstico.
+  await expect(page.getByText(/test\/free · 1\.2 s · 1 herramienta/)).toBeVisible();
 });

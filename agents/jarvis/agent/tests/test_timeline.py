@@ -180,3 +180,31 @@ def test_migracion_anade_columnas_sin_perder_datos(tmp_path, monkeypatch):
 
     assert {"tool_ok", "tool_duration_ms", "tool_summary"} <= columnas
     assert filas == [("user", "mensaje antiguo")]
+
+
+def test_borrar_conversacion_se_lleva_sus_mensajes(browser):
+    conv = memory.create_conversation("borrar")
+    memory.add_message(conv, "user", "hola")
+    memory.add_message(conv, "assistant", "buenas")
+    assert len(memory.get_timeline(conv)) == 2
+
+    resp = browser.delete(f"/api/conversations/{conv}")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    assert memory.get_timeline(conv) == []
+    assert browser.get(f"/api/conversations/{conv}").status_code == 404
+
+
+def test_borrar_conversacion_inexistente_es_404(browser):
+    assert browser.delete("/api/conversations/no-existe").status_code == 404
+
+
+def test_borrar_exige_sesion_humana(client):
+    """El token de API no basta: borrar es destructivo."""
+    conv = memory.create_conversation("protegida")
+    resp = client.delete(
+        f"/api/conversations/{conv}", headers={"X-API-Token": API_TOKEN}
+    )
+    assert resp.status_code in (401, 403)
+    assert memory.conversation_exists(conv)

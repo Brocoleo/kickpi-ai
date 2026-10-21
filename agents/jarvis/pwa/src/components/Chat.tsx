@@ -16,6 +16,11 @@ type Message = {
   content: string;
   tools?: ToolStep[];
   model?: string | null;
+  /** Diagnóstico del turno, enviado por el agente al cerrar. */
+  elapsedMs?: number;
+  toolsCount?: number;
+  /** Texto que originó un error, para poder reintentarlo. */
+  retry?: string;
   /** Fecha ISO del mensaje (para separar por dia y mostrar la hora). */
   at?: string;
   /** Burbuja que sigue recibiendo tokens por SSE. */
@@ -149,6 +154,12 @@ function etiquetaDia(iso: string): string {
   ayer.setDate(hoy.getDate() - 1);
   if (mismoDia(fecha, ayer)) return "Ayer";
   return fecha.toLocaleDateString("es-ES", { day: "numeric", month: "long" });
+}
+
+function duracion(ms?: number): string | null {
+  if (ms == null || !Number.isFinite(ms)) return null;
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
 }
 
 function hora(iso?: string): string | null {
@@ -477,25 +488,28 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
                   id: uid(),
                   role: "assistant",
                   content: data.reply,
-                  model: data.model,
                   at: new Date().toISOString(),
                 });
+              }
+              // El diagnóstico va en la última burbuja de Jarvis.
+              for (let index = next.length - 1; index >= 0; index -= 1) {
+                if (next[index].role === "assistant") {
+                  next[index] = {
+                    ...next[index],
+                    model: data.model ?? next[index].model,
+                    elapsedMs: data.elapsed_ms,
+                    toolsCount: data.tools_count ?? next[index].tools?.length ?? 0,
+                  };
+                  break;
+                }
               }
               return next;
             });
             setAwaitingReply(false);
-            // Reconciliacion con el historial persistido (fuente de verdad).
-            void api
-              .conversation(data.conversation_id)
-              .then(({ messages: stored }) => {
-                const mapped = mapStored(stored);
-                if (mapped.length > 0) setMessages(mapped);
-                const last = stored[stored.length - 1];
-                setAwaitingReply(last?.role === "tool");
-              })
-              .catch(() => {
-                /* el stream ya mostro la respuesta */
-              });
+            // No se vuelve a pedir el historial al cerrar: el stream ya es
+            // la fuente de verdad de este turno y el GET solo provocaba un
+            // parpadeo (reemplazaba burbujas idénticas por otras nuevas) y
+            // perdía el diagnóstico recién recibido.
           },
           onError: (detail) => {
             setMessages((prev) => [
@@ -506,6 +520,7 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
                 id: uid(),
                 role: "error",
                 content: `No pude completar la consulta: ${detail}`,
+                retry: content,
                 at: new Date().toISOString(),
               },
             ]);
@@ -528,6 +543,7 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
           id: uid(),
           role: "error",
           content: `No pude completar la consulta: ${detail}`,
+          retry: content,
           at: new Date().toISOString(),
         },
       ]);
@@ -750,9 +766,29 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
                     <RichText text={message.content} />
                   </div>
                 )}
-                {message.role === "assistant" && message.model && (
-                  <span className="msg-model">{shortModel(message.model)}</span>
+                {message.role === "error" && message.retry && (
+                  <button
+                    type="button"
+                    className="ghost-btn retry-btn"
+                    onClick={() => void send(message.retry)}
+                  >
+                    Reintentar
+                  </button>
                 )}
+                {message.role === "assistant" &&
+                  (message.model || message.elapsedMs != null) && (
+                    <span className="msg-model">
+                      {message.model ? shortModel(message.model) : "—"}
+                      {duracion(message.elapsedMs) && (
+                        <> · {duracion(message.elapsedMs)}</>
+                      )}
+                      {message.toolsCount
+                        ? ` · ${message.toolsCount} ${
+                            message.toolsCount === 1 ? "herramienta" : "herramientas"
+                          }`
+                        : ""}
+                    </span>
+                  )}
               </div>
             );
           })}
@@ -826,14 +862,25 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
           enterKeyHint="send"
           disabled={sending}
         />
-        <button
-          className="send-btn"
-          type="submit"
-          disabled={!input.trim() || sending}
-          aria-label="Enviar mensaje"
-        >
-          <SendIcon />
-        </button>
+        {sending ? (
+          <button
+            className="send-btn stop-btn"
+            type="button"
+            aria-label="Detener la respuesta"
+            onClick={() => abortRef.current?.abort()}
+          >
+            <span aria-hidden="true" />
+          </button>
+        ) : (
+          <button
+            className="send-btn"
+            type="submit"
+            disabled={!input.trim()}
+            aria-label="Enviar mensaje"
+          >
+            <SendIcon />
+          </button>
+        )}
       </form>
     </div>
   );

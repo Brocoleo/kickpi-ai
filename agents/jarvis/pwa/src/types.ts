@@ -24,6 +24,9 @@ export type ChatResponse = {
   reply: string;
   tool_trace: ToolTrace[];
   model: string | null;
+  /** Diagnóstico del turno (solo en el cierre del stream). */
+  elapsed_ms?: number;
+  tools_count?: number;
 };
 
 export type ToolCall = {

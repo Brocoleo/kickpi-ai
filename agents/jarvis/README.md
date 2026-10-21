@@ -141,10 +141,10 @@ cd pwa && npm run dev
 
 ## Banco de pruebas
 
-Cuatro capas, de más rápida a más real. Ninguna necesita sudo.
+Cinco capas, de más rápida a más real. Ninguna necesita sudo.
 
 ```bash
-# Agente (90): API, proxy /files, memoria, timeline y ramas del grafo
+# Agente (93): API, proxy /files, memoria, timeline y ramas del grafo
 cd agent && python3 -m pytest
 
 # Ejecutor (105 + 6 omitidas): policy engine, SSH, aprobaciones, auditoría
@@ -153,9 +153,22 @@ cd executor && python3 -m pytest
 # PWA (47): componentes y reconstrucción del historial (vitest + jsdom)
 cd pwa && npm run test
 
-# Navegador real (11 + 1 omitida): iPhone 13 sobre Chromium
+# Navegador real (14 + 1 omitida): iPhone 13 sobre Chromium
 cd pwa && npm run test:e2e
 ```
+
+**Y contra el servidor de verdad**, para medir lo que siente el usuario:
+
+```bash
+JARVIS_PASSWORD=... ./scripts/bench-chat.py            # desde el Mac, sin sudo
+JARVIS_PASSWORD=... ./scripts/bench-chat.py --loop 5   # p50/p95
+```
+
+Mide tiempo al primer evento, primer token y cierre, cuántas herramientas usó y
+si la respuesta llegó vacía. Falla (exit 1) si el stream no cierra, si no llega
+texto o si el caso esperaba herramientas y no hubo: sirve también en un cron.
+La contraseña va **solo** por entorno (nunca por argumento, que quedaría en el
+historial del shell) y las conversaciones que crea se borran al terminar.
 
 El banco E2E **no toca la placa**: simula el backend con interceptación de rutas,
 así que comprueba la interfaz de verdad en segundos y sin contraseñas. Cubre el
@@ -331,7 +344,8 @@ o **token de API**.
 | POST | `/api/chat` | `{"message": "...", "conversation_id": "..."}` |
 | POST | `/api/chat/stream` | Igual, pero responde **SSE** (`segment`, `token`, `tool`, `done`) |
 | GET | `/api/conversations` | Lista de conversaciones |
-| GET | `/api/conversations/{id}` | Mensajes de una conversación |
+| GET | `/api/conversations/{id}` | Mensajes de una conversación (con id, fecha y metadatos de herramientas) |
+| DELETE | `/api/conversations/{id}` | Borra la conversación y sus mensajes (sesión + CSRF) |
 | GET | `/api/tools` | Herramientas permitidas |
 | POST | `/api/tools/{name}` | Invoca una herramienta (widgets) |
 | GET | `/api/llm/status` | Cadena de modelos y circuit breaker |

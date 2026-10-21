@@ -70,6 +70,10 @@ export type ChatStreamDone = {
   reply: string;
   tool_trace: ToolTrace[];
   model: string | null;
+  /** Milisegundos que tardó el turno, medidos por el agente. */
+  elapsed_ms?: number;
+  /** Cuántas herramientas usó (el servidor ya las contó). */
+  tools_count?: number;
 };
 
 export type ChatStreamHandlers = {
@@ -130,6 +134,11 @@ export const api = {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    // Un stream puede cortarse a media respuesta (red, proveedor, contenedor
+    // reiniciado). Sin `done` el turno NO terminó: hay que decirlo, o el
+    // usuario leerá una respuesta incompleta creyendo que está completa.
+    let cerrado = false;
+    let fallo = false;
 
     const dispatch = (raw: string) => {
       let eventName = "message";
@@ -158,9 +167,11 @@ export const api = {
           handlers.onTool(payload as unknown as ToolTrace);
           break;
         case "done":
+          cerrado = true;
           handlers.onDone(payload as unknown as ChatStreamDone);
           break;
         case "error":
+          fallo = true;
           handlers.onError(
             typeof payload.detail === "string" ? payload.detail : "Error en el chat",
           );
@@ -181,6 +192,11 @@ export const api = {
       }
     }
     if (buffer.trim()) dispatch(buffer);
+    if (!cerrado && !fallo) {
+      handlers.onError(
+        "La respuesta se cortó antes de terminar (red o proveedor). Reintenta.",
+      );
+    }
   },
 
   tool: <T>(name: string, args: Record<string, unknown> = {}) =>
