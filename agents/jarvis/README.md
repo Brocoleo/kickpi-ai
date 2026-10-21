@@ -185,16 +185,16 @@ no bloquea: reescribir historia para arreglar un mensaje es peor que el aviso.
 Cinco capas, de más rápida a más real. Ninguna necesita sudo.
 
 ```bash
-# Agente (93): API, proxy /files, memoria, timeline y ramas del grafo
+# Agente (99): API, proxy /files, memoria, timeline y ramas del grafo
 cd agent && python3 -m pytest
 
 # Ejecutor (105 + 6 omitidas): policy engine, SSH, aprobaciones, auditoría
 cd executor && python3 -m pytest
 
-# PWA (47): componentes y reconstrucción del historial (vitest + jsdom)
+# PWA (48): componentes y reconstrucción del historial (vitest + jsdom)
 cd pwa && npm run test
 
-# Navegador real (14 + 1 omitida): iPhone 13 sobre Chromium
+# Navegador real (17 + 1 omitida): iPhone 13 sobre Chromium
 cd pwa && npm run test:e2e
 ```
 
@@ -221,6 +221,12 @@ reciente en Aprobaciones.
 El único caso que habla con el servidor real es `e2e/integrado.spec.ts` (login,
 aprobación, ejecución por SSH y auditoría). Se omite salvo que se le den las
 credenciales por entorno — nunca por archivo:
+
+```bash
+JARVIS_E2E_URL=http://127.0.0.1:8889 JARVIS_E2E_PASSWORD=... \
+  npx playwright test e2e/integrado.spec.ts
+```
+
 
 ```bash
 JARVIS_E2E_URL=http://127.0.0.1:8889 JARVIS_E2E_PASSWORD=... \
@@ -303,7 +309,11 @@ Seis secciones: **Chat**, **Métricas**, **Equipos**, **Archivos**,
 - Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
   contenedores; refresco cada 10 s.
 - Equipos muestra el estado de los equipos remotos (y solo eso).
-- Archivos enlaza a FileBrowser y Portainer (cada uno con su propio login).
+- **Archivos** incrusta FileBrowser en la app (mismo origen, sin otra pestaña):
+  se precarga en segundo plano, se monta una sola vez (cambiar de pestaña no
+  lo recarga ni pierde la carpeta) y sus assets se cachean aparte en el
+  service worker. Portainer sigue fuera, en su puerto, porque no admite
+  subrutas.
 - **Aprobaciones**: consulta, aprueba y rechaza las solicitudes que Jarvis
   necesita (ver *Fase C*). Refresco cada 10 s y al volver a enfocar;
   confirmación en dos pasos; cuenta atrás por solicitud; historial con

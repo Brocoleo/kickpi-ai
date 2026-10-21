@@ -195,3 +195,57 @@ def test_disabled_proxy_returns_503(client, monkeypatch):
     finally:
         main.get_settings.cache_clear()
     assert resp.status_code == 503
+
+
+def test_files_allows_same_origin_framing(client, monkeypatch):
+    """El iframe de Archivos es del mismo origen: DENY lo dejaría en blanco."""
+    _install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(200, stream=httpx.ByteStream(b"<html>")),
+    )
+    resp = client.get("/files/", headers={"X-API-Token": API_TOKEN})
+    assert resp.status_code == 200
+    assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+
+
+def test_api_keeps_deny(client):
+    """El resto del agente sigue sin poder enmarcarse."""
+    resp = client.get("/health")
+    assert resp.headers["x-frame-options"] == "DENY"
+
+
+def test_reuses_one_client(client):
+    """Un cliente por petición abriría una conexión por cada asset."""
+    assert main._files_client() is main._files_client()
+
+
+def test_retries_once_when_pooled_connection_died(client, monkeypatch):
+    llamadas = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise httpx.RemoteProtocolError("Server disconnected")
+        return httpx.Response(200, stream=httpx.ByteStream(b"ok"))
+
+    _install_transport(monkeypatch, handler)
+    resp = client.get("/files/", headers={"X-API-Token": API_TOKEN})
+    assert resp.status_code == 200
+    assert resp.content == b"ok"
+    assert llamadas["n"] == 2
+
+
+def test_does_not_retry_a_post(client, monkeypatch):
+    """Reintentar un POST podría duplicar una subida."""
+    llamadas = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        llamadas["n"] += 1
+        raise httpx.RemoteProtocolError("Server disconnected")
+
+    _install_transport(monkeypatch, handler)
+    resp = client.post(
+        "/files/api/resources/x", headers={"X-API-Token": API_TOKEN}, content=b"datos"
+    )
+    assert resp.status_code == 502
+    assert llamadas["n"] == 1

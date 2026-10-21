@@ -297,19 +297,39 @@ test("exporta la conversación a Markdown", async ({ page }) => {
   expect(texto).toContain("Todo tranquilo.");
 });
 
-test("Archivos abre FileBrowser en el mismo origen", async ({ page }) => {
+test("Archivos incrusta FileBrowser sin salir de la app", async ({ page }) => {
+  const pedidos: string[] = [];
   await mockBackend(page);
+  // El iframe va al proxy /files/ del agente. Aquí se sirve un HTML mínimo:
+  // lo que se prueba es el empaquetado (iframe del mismo origen), no Vue.
+  await page.route("**/files/**", async (route) => {
+    pedidos.push(new URL(route.request().url()).pathname);
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><html><body>FileBrowser cargado</body></html>",
+    });
+  });
 
   await page.goto("/");
   await page.getByRole("button", { name: "Archivos" }).click();
 
-  const filebrowser = page.getByRole("link", { name: /FileBrowser/ });
-  await expect(filebrowser).toBeVisible();
-  await expect(filebrowser).toHaveAttribute("href", "/files/");
+  const marco = page.locator('iframe[title*="FileBrowser"]');
+  await expect(marco).toHaveAttribute("src", "/files/");
+  const dentro = page.frameLocator('iframe[title*="FileBrowser"]').locator("body");
+  await expect(dentro).toHaveText("FileBrowser cargado");
 
   // Portainer sigue en su puerto: no admite subrutas.
   const portainer = page.getByRole("link", { name: /Portainer/ });
   await expect(portainer).toHaveAttribute("href", /:9443\/$/);
+
+  // Irse a otra pestaña y volver NO recarga FileBrowser: el iframe se queda
+  // montado (oculto) y conserva la carpeta en la que estabas.
+  const antes = pedidos.length;
+  await page.getByRole("button", { name: "Chat" }).click();
+  await page.getByRole("button", { name: "Archivos" }).click();
+  await expect(dentro).toHaveText("FileBrowser cargado");
+  expect(pedidos.length).toBe(antes);
 });
 
 test("Equipos muestra el estado de cada host", async ({ page }) => {

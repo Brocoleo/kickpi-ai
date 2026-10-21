@@ -49,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 
 @asynccontextmanager
@@ -64,6 +64,7 @@ async def lifespan(_: FastAPI):
         log.warning("JARVIS_LLM_API_KEY vacía: /api/chat devolverá un aviso")
     log.info("Jarvis Agent %s listo (modelo=%s)", VERSION, settings.llm_model)
     yield
+    await _close_files_client()
 
 
 app = FastAPI(title="Jarvis Agent", version=VERSION, lifespan=lifespan)
@@ -74,7 +75,13 @@ async def headers_middleware(request: Request, call_next):
     """Cabeceras de seguridad + no-store para la API y el HTML."""
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    if request.url.path.startswith("/files"):
+        # FileBrowser se incrusta en la pestaña Archivos. Es el mismo origen,
+        # así que SAMEORIGIN no relaja nada; DENY rompería el iframe (y el
+        # usuario solo vería un recuadro vacío, sin error visible).
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    else:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault(
         "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
@@ -945,6 +952,37 @@ def _forward_headers(request: Request, session_cookie: str) -> dict[str, str]:
     return headers
 
 
+_FILES_CLIENT: httpx.AsyncClient | None = None
+
+
+def _files_client() -> httpx.AsyncClient:
+    """Cliente HTTP reutilizable hacia FileBrowser.
+
+    Uno por petición significaría una conexión nueva por cada asset que pide
+    el iframe al abrir la pestaña. Con pool, a partir de la segunda petición
+    la conexión ya está viva. El timeout se pasa por petición (las descargas
+    pueden ser largas), no en el cliente.
+    """
+    global _FILES_CLIENT
+    if _FILES_CLIENT is None:
+        _FILES_CLIENT = httpx.AsyncClient(
+            follow_redirects=False,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            ),
+        )
+    return _FILES_CLIENT
+
+
+async def _close_files_client() -> None:
+    global _FILES_CLIENT
+    if _FILES_CLIENT is not None:
+        await _FILES_CLIENT.aclose()
+        _FILES_CLIENT = None
+
+
 async def _files_proxy(request: Request, rest: str = "") -> Response:
     settings = get_settings()
     base = (settings.filebrowser_url or "").rstrip("/")
@@ -974,15 +1012,30 @@ async def _files_proxy(request: Request, rest: str = "") -> Response:
         write=settings.filebrowser_timeout,
         pool=5.0,
     )
-    client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    client = _files_client()
     upstream_request = client.build_request(
-        request.method, url, headers=headers, content=request.stream()
+        request.method, url, headers=headers, content=request.stream(), timeout=timeout
     )
 
     try:
         upstream = await client.send(upstream_request, stream=True)
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as exc:
+        # Una conexión del pool puede haber muerto porque el contenedor se
+        # reinició. Se reintenta UNA vez y solo en métodos sin cuerpo: en un
+        # POST el cuerpo ya se consumió y reintentar podría duplicar algo.
+        if request.method not in ("GET", "HEAD"):
+            log.warning("FileBrowser inaccesible (%s): %s", url, exc)
+            raise HTTPException(502, "FileBrowser no responde") from exc
+        log.info("conexión muerta hacia FileBrowser (%s); reintento", url)
+        try:
+            upstream_request = client.build_request(
+                request.method, url, headers=headers, timeout=timeout
+            )
+            upstream = await client.send(upstream_request, stream=True)
+        except httpx.HTTPError as segundo:
+            log.warning("FileBrowser inaccesible (%s): %s", url, segundo)
+            raise HTTPException(502, "FileBrowser no responde") from segundo
     except httpx.HTTPError as exc:
-        await client.aclose()
         log.warning("FileBrowser inaccesible (%s): %s", url, exc)
         raise HTTPException(502, "FileBrowser no responde") from exc
 
@@ -1000,8 +1053,8 @@ async def _files_proxy(request: Request, rest: str = "") -> Response:
     cookies = upstream.headers.get_list("set-cookie")
 
     async def cleanup() -> None:
+        # El cliente es compartido: solo se suelta la respuesta.
         await upstream.aclose()
-        await client.aclose()
 
     response = StreamingResponse(
         upstream.aiter_raw(),

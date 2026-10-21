@@ -32,6 +32,9 @@ export default function App() {
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   // Contador de solicitudes pendientes (badge de la pestaña).
   const [pendingCount, setPendingCount] = useState(0);
+  // FileBrowser se monta una sola vez y se queda vivo (oculto) al cambiar de
+  // pestaña: abrirlo deja de ser una recarga completa y no pierde la carpeta.
+  const [filesReady, setFilesReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +101,22 @@ export default function App() {
     };
   }, [phase, tab]);
 
+  // Precarga silenciosa: con la sesión ya resuelta, se espera un momento
+  // para no competir con el primer turno del chat ni con las métricas.
+  useEffect(() => {
+    if (phase !== "auth" || filesReady) return;
+    const timer = setTimeout(() => setFilesReady(true), 1500);
+    return () => clearTimeout(timer);
+  }, [phase, filesReady]);
+
+
+  // Se monta desde el evento (no desde un efecto): abrir Archivos antes de
+  // que termine la precarga lo carga al instante, y no hay un render extra.
+  const handleTabChange = useCallback((next: Tab) => {
+    setTab(next);
+    if (next === "files") setFilesReady(true);
+  }, []);
+
   const handleLogin = useCallback(async () => {
     const result = await api.me();
     setMe(result);
@@ -148,10 +167,18 @@ export default function App() {
         </div>
       </header>
 
-      <main className={`main ${tab === "chat" ? "chat-mode" : ""}`}>
+      <main
+        className={`main ${tab === "chat" ? "chat-mode" : ""} ${
+          tab === "files" ? "files-mode" : ""
+        }`}
+      >
         {tab === "chat" && <Chat onUnauthorized={handleUnauthorized} />}
         {tab === "equipos" && <Equipos onUnauthorized={handleUnauthorized} />}
-        {tab === "files" && <Files />}
+        {filesReady && (
+          <div className="tab-pane" hidden={tab !== "files"}>
+            <Files />
+          </div>
+        )}
         {tab === "approvals" && (
           <Aprobaciones
             csrfToken={csrfToken}
@@ -164,7 +191,7 @@ export default function App() {
         )}
       </main>
 
-      <TabBar tab={tab} onChange={setTab} pendingCount={pendingCount} />
+      <TabBar tab={tab} onChange={handleTabChange} pendingCount={pendingCount} />
     </div>
   );
 }

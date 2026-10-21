@@ -49,7 +49,24 @@ export default defineConfig({
           /^\/health$/,
           /^\/files(\/|$)/,
         ],
-        runtimeCaching: [],
+        // Los assets de FileBrowser son inmutables (nombre con hash) y son
+        // la mayor parte del tiempo de carga del iframe. Se cachean aparte,
+        // sin tocar su API ni su HTML: abrir Archivos deja de repintar.
+        runtimeCaching: [
+          {
+            urlPattern: ({ url, sameOrigin }) =>
+              Boolean(sameOrigin) && url.pathname.startsWith("/files/public/static/"),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "filebrowser-static",
+              expiration: {
+                maxEntries: 80,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+        ],
       },
     }),
   ],
