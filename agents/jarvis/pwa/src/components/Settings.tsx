@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
 import { shortModel } from "../lib/format";
-import type { AuthMe, LlmStatus } from "../types";
+import type { AuthMe, Health, LlmStatus } from "../types";
 import { LogoutIcon, ShieldIcon } from "./icons";
 
 type Props = {
@@ -12,6 +12,7 @@ type Props = {
 
 export function Settings({ me, onLogout, onUnauthorized }: Props) {
   const [llm, setLlm] = useState<LlmStatus | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -26,6 +27,14 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 401) onUnauthorized();
         else setError(err instanceof Error ? err.message : "Error");
+      });
+    api
+      .health()
+      .then((h) => {
+        if (!cancelled) setHealth(h);
+      })
+      .catch(() => {
+        /* el build se muestra como "—" si /health no responde */
       });
     return () => {
       cancelled = true;
@@ -69,6 +78,10 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
           <div>
             <dt>Contraseña propia</dt>
             <dd>{me?.password_configured ? "configurada" : "no (usa el token)"}</dd>
+          </div>
+          <div>
+            <dt>Build PWA</dt>
+            <dd className="mono">{health?.static_asset ?? "—"}</dd>
           </div>
         </dl>
       </section>

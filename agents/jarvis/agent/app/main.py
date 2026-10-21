@@ -8,6 +8,7 @@ Rutas:
 """
 import asyncio
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -85,6 +86,17 @@ async def headers_middleware(request: Request, call_next):
     )
     if request.url.path.startswith("/api/") or request.url.path == "/health":
         response.headers["Cache-Control"] = "no-store"
+    else:
+        # El "shell" de la PWA (HTML, service worker, manifest) NUNCA se
+        # cachea: si se cachea, el iPhone sigue abriendo un build viejo.
+        # Los assets llevan hash en el nombre, así que son inmutables.
+        path = request.url.path
+        if path in ("/", "/index.html") or path.endswith(
+            ("/sw.js", "/manifest.webmanifest")
+        ):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+        elif path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
@@ -110,6 +122,23 @@ class LoginRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 # Salud
 # --------------------------------------------------------------------------- #
+_ASSET_RE = re.compile(r"index-[A-Za-z0-9_-]+\.js")
+
+
+def _static_asset() -> str | None:
+    """Nombre del bundle JS que la PWA sirve ahora mismo.
+
+    Permite detectar builds viejos: el script de despliegue compara este
+    valor con el bundle recién compilado y falla si no coinciden.
+    """
+    index = Path(get_settings().static_dir) / "index.html"
+    try:
+        match = _ASSET_RE.search(index.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return match.group(0) if match else None
+
+
 @app.get("/health", tags=["meta"])
 async def health() -> dict:
     settings = get_settings()
@@ -130,6 +159,7 @@ async def health() -> dict:
         "tools_reachable": tools_ok,
         "api_token_configured": bool(settings.api_token),
         "pwa": bool(Path(settings.static_dir).is_dir()),
+        "static_asset": _static_asset(),
     }
 
 

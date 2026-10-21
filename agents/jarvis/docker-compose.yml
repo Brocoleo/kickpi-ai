@@ -128,6 +128,9 @@ services:
       JARVIS_COOKIE_SECURE: ${JARVIS_COOKIE_SECURE:-true}
     volumes:
       - /mnt/data/docker/jarvis_data:/data
+      # PWA servida desde el host: actualizar el build es `rsync` y listo,
+      # sin reconstruir la imagen del agente.
+      - ./agent/static:/app/static:ro
     ports:
       - "127.0.0.1:8888:8000"
     networks:

@@ -95,6 +95,7 @@ export type Health = {
   llm_model: string;
   tools_reachable: boolean;
   pwa: boolean;
+  static_asset?: string | null;
 };
 
 /* --- Equipos (ejecutor multi-host) ------------------------------------- */

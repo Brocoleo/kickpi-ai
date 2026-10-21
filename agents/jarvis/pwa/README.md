@@ -36,3 +36,30 @@ Decisiones clave:
   consulta el estado persistido (es una lectura) y **no reintenta la
   ejecución**. Un error de red se informa como error de red, nunca como
   "la ejecución falló".
+
+## Despliegue (build a prueba de balas)
+
+La PWA **ya no se hornea en la imagen del agente**: `docker-compose.yml`
+monta `./agent/static` en `/app/static` (solo lectura). Publicar un build
+nuevo es sincronizar archivos, sin reconstruir la imagen:
+
+```bash
+./deploy.sh            # compila, sincroniza a la placa y VERIFICA
+./deploy.sh --check    # solo verifica (build local vs placa vs /health)
+./deploy.sh --watch    # vigila src/ y despliega en cada cambio (opcional)
+./deploy.sh --test     # corre vitest y luego despliega
+```
+
+El script falla si:
+
+- no hay build local válido (y entonces **no toca** la placa),
+- el `index.html` de la placa referencia otro bundle,
+- `/health` reporta un `static_asset` distinto (backend viejo o caché).
+
+`GET /health` incluye `static_asset` (p. ej. `index--SMPJ4-r.js`), y la
+pantalla **Ajustes → Sesión → Build PWA** lo muestra: si el iPhone no ve la
+pestaña esperada, ese campo delata al instante qué build está corriendo.
+
+Cache: el HTML, `sw.js` y el manifest se sirven con `no-store`; los assets
+con hash, `immutable`. Así el teléfono nunca queda atascado en un build
+antiguo.
