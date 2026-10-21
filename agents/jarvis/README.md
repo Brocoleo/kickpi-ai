@@ -172,6 +172,51 @@ JARVIS_E2E_URL=http://127.0.0.1:8889 JARVIS_E2E_PASSWORD=... \
   npx playwright test e2e/integrado.spec.ts
 ```
 
+## Copias de seguridad
+
+```bash
+./deploy/backup.sh            # copia en la placa, la trae al Mac y verifica
+./deploy/backup.sh --drill    # verifica la última copia (simulacro)
+./deploy/backup.sh --list     # qué copias hay y su sha256
+./deploy/backup.sh --restore  # instrucciones de restauración real
+```
+
+Sin sudo: lee las bases (son legibles) y nunca toca los contenedores. Tres
+copias en tres máquinas:
+
+| # | Dónde | Para qué |
+|---|-------|----------|
+| 1 | placa `/mnt/data/respaldos/` | origen, rotación de 14 |
+| 2 | MacBook `~/respaldos/jarvis/` | segunda copia, y viaja contigo |
+| 3 | Xeon `~/respaldos/jarvis/` | tercera copia, cuando está encendido |
+
+Qué entra: las bases (agente, auditoría y FileBrowser), el `compose`, el
+`.env` y los catálogos del ejecutor. El paquete queda con permisos 600 porque
+contiene secretos.
+
+**No es un `cp`.** Las bases están en WAL y el agente escribe mientras se
+copian; se copia el trío `db`/`-wal`/`-shm` y se hace un checkpoint, así la
+instantánea es coherente aunque haya un turno en curso.
+
+**El simulacro comprueba algo de verdad.** Para cada base: `integrity_check`,
+claves foráneas y el número de filas de cada tabla contra el manifiesto,
+además del sha256 y el tamaño. Probado con paquetes dañados:
+
+| Sabotaje | Resultado |
+|---|---|
+| paquete truncado | `el paquete está dañado` |
+| base corrompida con hash del manifiesto reajustado | `database disk image is malformed` |
+| `stack/.env` eliminado | `falta stack/.env` |
+
+Una copia que no pasa el simulacro **no se queda en el Mac** ni se replica.
+
+Restauración real (la haces tú, con el stack parado): `--restore` imprime los
+comandos. Las bases viejas son compatibles: el agente migra el esquema al
+arrancar.
+
+Para que sea diaria, un LaunchAgent en el Mac o un `cron` de la placa llaman
+al mismo script; no se instala nada sin pedirlo.
+
 ## Autenticación
 
 Dos vías deliberadamente separadas:
