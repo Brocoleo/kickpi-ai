@@ -4,3 +4,11 @@ firmware/
 *.img
 *.img.xz
 *.img.xz.sha256
+
+# Secretos: nunca versionar. Los .example sí se versionan (documentan las
+# variables sin contener valores reales).
+*.env
+!*.env.example
+
+# Restos locales del escritorio (macOS)
+Documento sin título
