@@ -14,8 +14,13 @@ from .config import get_settings
 from .executor_client import TOOL_NAMES as EXECUTOR_TOOL_NAMES
 from .executor_client import TOOL_SPECS as EXECUTOR_TOOL_SPECS
 from .executor_client import ExecutorError, call_executor
-from .llm import LLMError, chat_completion
-from .memory import add_audit
+from .llm import (
+    STREAM_EMIT,
+    LLMError,
+    chat_completion,
+    chat_completion_stream,
+)
+from .memory import add_audit, link_approval
 from .tools_client import TOOL_SPECS, ToolsError, call_tool
 
 
@@ -62,10 +67,26 @@ def _summarize(result: dict) -> str:
 async def _call_model(state: AgentState) -> dict:
     messages = state["messages"]
     iterations = state.get("iterations", 0) + 1
+    tools = list(TOOL_SPECS) + list(EXECUTOR_TOOL_SPECS)
+    emit = STREAM_EMIT.get()
     try:
-        msg, model_used = await chat_completion(
-            messages, tools=list(TOOL_SPECS) + list(EXECUTOR_TOOL_SPECS)
-        )
+        if emit is None:
+            msg, model_used = await chat_completion(messages, tools=tools)
+        else:
+            # Cada llamada al modelo abre una burbuja nueva en la PWA. Se
+            # emite "segment" con el primer token, no antes: si el modelo
+            # falla y se hace fallback, no queda una burbuja vacia.
+            started = {"value": False}
+
+            def on_token(text: str) -> None:
+                if not started["value"]:
+                    started["value"] = True
+                    emit({"event": "segment"})
+                emit({"event": "token", "text": text})
+
+            msg, model_used = await chat_completion_stream(
+                messages, tools, on_token
+            )
     except LLMError as exc:
         # Degradamos con elegancia: el usuario ve el motivo, no un 500.
         msg = {"role": "assistant", "content": f"⚠️ No pude consultar el modelo: {exc}"}
@@ -103,6 +124,20 @@ async def _run_tools(state: AgentState) -> dict:
         duration = int((time.monotonic() - started) * 1000)
         summary = _summarize(result)
 
+        # Enlaza la aprobacion con el turno EN CUANTO se crea, sin esperar a
+        # que termine el turno: el humano puede decidir antes y el chat debe
+        # poder reanudarse igualmente.
+        if isinstance(result, dict) and result.get("state") == "pending_approval":
+            approval = result.get("approval") or {}
+            approval_id = approval.get("id") if isinstance(approval, dict) else None
+            if approval_id and state.get("conversation_id"):
+                await asyncio.to_thread(
+                    link_approval,
+                    approval_id,
+                    state["conversation_id"],
+                    call.get("id"),
+                )
+
         await asyncio.to_thread(
             add_audit, name, args, ok, duration, summary, state.get("conversation_id")
         )
@@ -118,6 +153,17 @@ async def _run_tools(state: AgentState) -> dict:
         trace.append(
             {"tool": name, "arguments": args, "ok": ok, "duration_ms": duration, "summary": summary}
         )
+        emit = STREAM_EMIT.get()
+        if emit is not None:
+            emit(
+                {
+                    "event": "tool",
+                    "tool": name,
+                    "ok": ok,
+                    "duration_ms": duration,
+                    "summary": summary,
+                }
+            )
 
     return {
         "messages": state["messages"] + new_messages,

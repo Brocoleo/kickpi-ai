@@ -149,7 +149,7 @@ code {
   width: 100%;
   max-width: 720px;
   margin: 0 auto;
-  padding: 18px 16px calc(26px + env(safe-area-inset-bottom));
+  padding: 18px 16px calc(76px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1126,7 +1126,7 @@ code {
 /* --------------------------------------------------------------- tab bar */
 .tabbar {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   border-top: 1px solid var(--border-soft);
   background: rgba(7, 9, 13, 0.95);
   backdrop-filter: blur(14px);
@@ -1782,10 +1782,16 @@ code {
 
 /* --------------------------------------------------------------- modal */
 
+/* El modal se ancla al fondo del viewport DINAMICO (dvh): en Safari eso
+   deja el pie por encima de la barra inferior del navegador. */
 .modal-backdrop {
   position: fixed;
-  inset: 0;
-  z-index: 50;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 200;
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -1796,36 +1802,44 @@ code {
   -webkit-backdrop-filter: blur(6px);
 }
 
+/* Mientras hay una decision pendiente, la navegacion no compite. */
+body.modal-open {
+  overflow: hidden;
+}
+
+body.modal-open .tabbar {
+  display: none;
+}
+
 .modal {
   width: 100%;
   max-width: 520px;
-  /* Fallback para Safari < 16.4 (no entiende dvh). */
-  max-height: calc(100vh - 24px);
-  max-height: calc(100dvh - 24px);
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  max-height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 0;
+  padding: 0;
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 22px;
   background: linear-gradient(180deg, var(--surface-2), var(--surface));
   box-shadow: 0 -12px 50px rgba(0, 0, 0, 0.55);
 }
 
 .modal-head {
+  flex: none;
   display: flex;
-  align-items: flex-start;
-  gap: 11px;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 10px;
 }
 
 .modal-mark {
   display: grid;
   place-items: center;
   flex: none;
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -1845,8 +1859,8 @@ code {
 }
 
 .modal-mark svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
 }
 
 .modal-titles {
@@ -1855,17 +1869,77 @@ code {
 }
 
 .modal-titles h2 {
-  margin: 0 0 3px;
-  font-size: 17px;
+  margin: 0 0 2px;
+  font-size: 16.5px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
 .modal-titles p {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--muted);
-  line-height: 1.45;
+  line-height: 1.35;
+}
+
+/* Cuenta atras compacta, siempre visible en el encabezado. */
+.modal-timer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 4px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--accent);
+}
+
+.modal-timer.warn {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.modal-timer-value {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.modal-timer-label {
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.modal-body {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 14px 12px;
+}
+
+/* Acciones fijas: no forman parte del area con scroll. */
+.modal-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border-soft);
+  background: rgba(7, 9, 13, 0.6);
+}
+
+.modal-actions .btn {
+  flex: 1;
+  min-height: 44px;
 }
 
 .facts {
@@ -1899,21 +1973,158 @@ code {
   overflow-wrap: anywhere;
 }
 
+.facts-summary {
+  padding: 10px 12px;
+}
+
+.facts-summary > div {
+  grid-template-columns: 84px 1fr;
+}
+
+.risk {
+  display: inline-flex;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.risk.low {
+  color: var(--accent);
+  background: rgba(94, 234, 212, 0.1);
+}
+
+.risk.medium {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.risk.high {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.14);
+}
+
+/* Comando exacto: protagonista de la confirmacion. */
+.cmd-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cmd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cmd-label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.cmd-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 11.5px;
+}
+
+.cmd-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+
+.cmd-code {
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #05070a;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.cmd-code.is-expanded {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+
+/* Detalles tecnicos plegados por defecto. */
+.tech {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.tech > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tech > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tech > summary svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 0.15s ease;
+}
+
+.tech[open] > summary {
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+}
+
+.tech-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.facts-details {
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.facts-details > div {
+  grid-template-columns: 92px 1fr;
+}
+
+.facts-details dd {
+  font-size: 12px;
+}
+
 .modal-note {
   margin: 0;
   font-size: 12px;
   color: var(--muted);
   line-height: 1.45;
-}
-
-.modal-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.modal-actions .btn {
-  flex: 1;
-  min-height: 44px;
 }
 
 .btn.danger-solid {
@@ -1938,5 +2149,50 @@ code {
 
   .tab {
     font-size: 9.5px;
+  }
+}
+
+
+/* --------------------------------------------------------- métricas en Equipos */
+.screen-embedded {
+  max-width: none;
+  padding: 0;
+  gap: 10px;
+}
+
+.screen-embedded .screen-head {
+  display: none;
+}
+
+.section-title {
+  margin: 6px 2px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.equipos-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+
+/* Cursor de la respuesta en streaming */
+.bubble.streaming::after {
+  content: "▍";
+  margin-left: 2px;
+  color: var(--accent);
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+
+@keyframes caret-blink {
+  to {
+    visibility: hidden;
   }
 }

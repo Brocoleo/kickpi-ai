@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     connect_timeout: float = 10.0
     command_timeout: float = 60.0
     status_timeout: float = 8.0
+    probe_timeout: float = 3.0
 
     # Salida maxima que se devuelve al agente (bytes).
     max_output_bytes: int = 64_000

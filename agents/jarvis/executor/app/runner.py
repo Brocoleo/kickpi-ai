@@ -81,6 +81,53 @@ async def _run_local(argv: list[str], timeout: float) -> RunResult:
     )
 
 
+async def _run_ssh_probe(host: Host, argv: list[str], timeout: float) -> RunResult:
+    """Ejecución SSH SOLO para health-check: timeout agresivo, SIN reintentos.
+    Si el host no responde en 3 s, se marca offline y no bloquea /equipos.
+    """
+    settings = get_settings()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    if not host.address:
+        return RunResult(255, "", "", 0, error="host sin direccion configurada")
+    if not host.identity_file or not os.path.isfile(host.identity_file):
+        return RunResult(255, "", "", 0, error="clave SSH del host no disponible")
+    if not host.known_hosts or not os.path.isfile(host.known_hosts):
+        return RunResult(255, "", "", 0, error="known_hosts del host no disponible")
+
+    command = " ".join(shlex.quote(arg) for arg in argv)
+
+    try:
+        async with asyncssh.connect(
+            host.address,
+            port=host.port,
+            username=host.user,
+            client_keys=[host.identity_file],
+            known_hosts=host.known_hosts,
+            connect_timeout=timeout,
+            login_timeout=timeout,
+            agent_path=None,
+        ) as conn:
+            result = await conn.run(command, timeout=timeout, check=False)
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            return RunResult(
+                result.exit_status if result.exit_status is not None else 0,
+                stdout.decode("utf-8", "replace") if isinstance(stdout, bytes) else stdout,
+                stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else stderr,
+                int((loop.time() - started) * 1000),
+            )
+    except asyncssh.PermissionDenied:
+        return RunResult(255, "", "", int((loop.time() - started) * 1000), error="SSH: autenticacion rechazada")
+    except asyncssh.HostKeyNotVerifiable as exc:
+        return RunResult(255, "", "", int((loop.time() - started) * 1000), error=f"SSH: host key no verificada ({exc})")
+    except (OSError, asyncssh.Error, asyncio.TimeoutError) as exc:
+        return RunResult(255, "", "", int((loop.time() - started) * 1000), error=f"SSH: {type(exc).__name__}: {exc}")
+    except Exception as exc:
+        return RunResult(255, "", "", int((loop.time() - started) * 1000), error=f"SSH: error inesperado {type(exc).__name__}: {exc}")
+
+
 async def _run_ssh(host: Host, argv: list[str], timeout: float) -> RunResult:
     """Ejecucion remota por SSH con verificacion estricta de host key."""
     settings = get_settings()

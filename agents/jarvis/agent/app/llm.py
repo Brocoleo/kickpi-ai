@@ -17,6 +17,8 @@ Claves del diseño:
   modelo durante un enfriamiento, para no martillar a un proveedor saturado.
 """
 import asyncio
+import contextvars
+import json
 import logging
 import time
 
@@ -41,11 +43,15 @@ class LLMError(RuntimeError):
         kind: str = "error",
         model: str | None = None,
         retryable: bool = False,
+        emitted: bool = False,
     ):
         super().__init__(message)
         self.kind = kind
         self.model = model
         self.retryable = retryable
+        # True si ya se enviaron tokens al cliente antes del fallo: en ese
+        # caso NO se puede hacer fallback (duplicaria texto).
+        self.emitted = emitted
 
 
 class CircuitBreaker:
@@ -100,6 +106,16 @@ class CircuitBreaker:
 
 
 CIRCUIT = CircuitBreaker()
+
+# Canal de eventos para el chat en streaming (SSE).
+#
+# El endpoint instala una funcion en este ContextVar y los nodos del grafo la
+# usan para emitir tokens/eventos. Asi el grafo no depende de FastAPI ni de
+# una conexion concreta (tambien funciona con `ainvoke` normal: el valor por
+# defecto es None).
+STREAM_EMIT: contextvars.ContextVar = contextvars.ContextVar(
+    "jarvis_stream_emit", default=None
+)
 
 
 def _classify_status(status: int) -> tuple[str, bool]:
@@ -236,3 +252,191 @@ async def chat_completion(
         f"Ningún modelo respondió. {detail}",
         "all_failed",
     )
+
+
+async def _stream_post(
+    client: httpx.AsyncClient,
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+    timeout: float,
+    on_token,
+) -> tuple[dict, bool]:
+    """Una llamada SSE al proveedor. Devuelve (mensaje, emitio_texto)."""
+    settings = get_settings()
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": settings.llm_max_tokens,
+        "temperature": 0.2,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/kickpi-ai",
+        "X-Title": "Jarvis Agent",
+    }
+    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+
+    parts: list[str] = []
+    tool_calls: dict[int, dict] = {}
+    emitted = False
+
+    try:
+        async with client.stream(
+            "POST", url, json=payload, headers=headers, timeout=timeout
+        ) as response:
+            if response.status_code >= 400:
+                body_bytes = await response.aread()
+                body = body_bytes.decode("utf-8", "replace")[:200].replace("\n", " ")
+                kind, retryable = _classify_status(response.status_code)
+                raise LLMError(
+                    f"HTTP {response.status_code}: {body}",
+                    kind,
+                    model,
+                    retryable=retryable,
+                    emitted=emitted,
+                )
+
+            async for line in response.aiter_lines():
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except ValueError:
+                    continue
+                choices = obj.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+
+                text = delta.get("content")
+                if isinstance(text, list):  # algunos proveedores mandan bloques
+                    text = "".join(
+                        part.get("text", "")
+                        for part in text
+                        if isinstance(part, dict)
+                    )
+                if text:
+                    parts.append(text)
+                    emitted = True
+                    on_token(text)
+
+                for call in delta.get("tool_calls") or []:
+                    try:
+                        index = int(call.get("index") or 0)
+                    except (TypeError, ValueError):
+                        index = 0
+                    acc = tool_calls.setdefault(
+                        index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    if call.get("id"):
+                        acc["id"] = call["id"]
+                    fn = call.get("function") or {}
+                    if fn.get("name"):
+                        acc["function"]["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        acc["function"]["arguments"] += fn["arguments"]
+    except httpx.TimeoutException as exc:
+        raise LLMError(
+            f"timeout tras {timeout:.0f}s", TIMEOUT, model, emitted=emitted
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise LLMError(
+            f"error de red: {exc}", NETWORK, model, emitted=emitted
+        ) from exc
+    except LLMError as exc:
+        exc.emitted = emitted
+        raise
+
+    message: dict = {"role": "assistant", "content": "".join(parts)}
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    return message, emitted
+
+
+async def chat_completion_stream(
+    messages: list[dict], tools: list[dict] | None, on_token
+) -> tuple[dict, str]:
+    """Como `chat_completion`, pero reenviando cada token a `on_token`.
+
+    El fallback entre modelos solo ocurre si todavia no se ha enviado texto
+    (si ya se emitio, cambiar de modelo duplicaria la respuesta).
+    """
+    settings = get_settings()
+    if not settings.llm_configured:
+        raise LLMError("No hay JARVIS_LLM_API_KEY configurada", AUTH)
+
+    chain = settings.llm_model_chain
+    if not chain:
+        raise LLMError("No hay modelos configurados", AUTH)
+
+    started = time.monotonic()
+    errors: list[str] = []
+
+    async with httpx.AsyncClient(timeout=settings.llm_timeout) as client:
+        for model in chain:
+            if CIRCUIT.is_open(model):
+                errors.append(f"{model}: en enfriamiento (circuit breaker)")
+                continue
+
+            remaining = settings.llm_total_budget - (time.monotonic() - started)
+            if remaining <= 1:
+                errors.append("presupuesto de tiempo agotado")
+                break
+
+            attempts = 1 + max(0, settings.llm_max_retries_server)
+            for attempt in range(attempts):
+                per_attempt = min(settings.llm_timeout, max(1.0, remaining))
+                try:
+                    message, _ = await _stream_post(
+                        client, model, messages, tools, per_attempt, on_token
+                    )
+                except LLMError as exc:
+                    if exc.emitted:
+                        # Ya hay texto en pantalla: no se reintenta.
+                        CIRCUIT.record_failure(model, str(exc))
+                        raise
+                    if exc.kind == AUTH:
+                        raise
+                    if exc.retryable and attempt < attempts - 1:
+                        delay = settings.llm_retry_backoff * (attempt + 1)
+                        log.warning(
+                            "%s (stream) intento %d/%d fallo (%s); reintento en %.1fs",
+                            model, attempt + 1, attempts, exc.kind, delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    CIRCUIT.record_failure(model, str(exc))
+                    errors.append(f"{model}: {exc}")
+                    log.warning(
+                        "modelo %s descartado en stream (%s): %s",
+                        model, exc.kind, exc,
+                    )
+                    break
+
+                CIRCUIT.record_success(model)
+                if errors:
+                    log.info(
+                        "respondio %s en stream tras fallback (%d errores)",
+                        model, len(errors),
+                    )
+                return message, model
+
+    detail = " | ".join(errors) if errors else "sin detalle"
+    raise LLMError(f"Ningun modelo respondio. {detail}", "all_failed")

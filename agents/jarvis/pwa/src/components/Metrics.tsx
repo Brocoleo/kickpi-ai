@@ -4,7 +4,7 @@ import { bytes, percent, relativeTime, uptime } from "../lib/format";
 import type { ContainerInfo, Containers, Disks, SystemStats } from "../types";
 import { RefreshIcon } from "./icons";
 
-type Props = { onUnauthorized: () => void };
+type Props = { onUnauthorized: () => void; embedded?: boolean };
 
 type History = { cpu: number[]; mem: number[]; temp: number[] };
 
@@ -36,7 +36,7 @@ function tone(container: ContainerInfo): string {
   return "ok";
 }
 
-export function Metrics({ onUnauthorized }: Props) {
+export function Metrics({ onUnauthorized, embedded = false }: Props) {
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [disks, setDisks] = useState<Disks | null>(null);
   const [containers, setContainers] = useState<Containers | null>(null);
@@ -96,7 +96,7 @@ export function Metrics({ onUnauthorized }: Props) {
   const temperature = stats?.cpu.temperature_c;
 
   return (
-    <div className="screen">
+    <div className={`screen${embedded ? " screen-embedded" : ""}`}>
       <div className="screen-head">
         <h1 className="screen-title">Métricas</h1>
         <div className="head-meta">

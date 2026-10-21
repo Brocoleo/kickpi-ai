@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { RefreshIcon } from "./icons";
+import { Metrics } from "./Metrics";
 import type { Ejecucion, Equipo } from "../types";
 
 function relativeTime(iso: string): string {
@@ -58,7 +59,7 @@ function HostCard({ host }: { host: Equipo }) {
   );
 }
 
-export function Equipos() {
+export function Equipos({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [hosts, setHosts] = useState<Equipo[]>([]);
   const [executions, setExecutions] = useState<Ejecucion[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -141,6 +142,11 @@ export function Equipos() {
           </ul>
         )}
       </div>
+
+      <section className="equipos-metrics" aria-label="Recursos del servidor">
+        <h2 className="section-title">Recursos del servidor</h2>
+        <Metrics onUnauthorized={onUnauthorized} embedded />
+      </section>
     </div>
   );
 }

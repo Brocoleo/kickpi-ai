@@ -7,6 +7,7 @@ Rutas:
   /                    → PWA compilada (React + Vite)
 """
 import asyncio
+import json
 import logging
 import re
 import time
@@ -14,7 +15,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,7 +33,7 @@ from .config import SYSTEM_PROMPT, get_settings
 from .csrf import check_origin, issue_token
 from .db import init_db
 from .graph import AGENT
-from .llm import CIRCUIT
+from .llm import CIRCUIT, STREAM_EMIT
 from .security import (
     check_admin_password,
     login_allowed,
@@ -46,7 +48,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 @asynccontextmanager
@@ -399,6 +401,7 @@ async def aprobar_aprobacion(
 @app.post("/api/aprobaciones/{approval_id}/rechazar", tags=["aprobaciones"])
 async def rechazar_aprobacion(
     approval_id: str,
+    background: BackgroundTasks,
     body: RejectBody | None = None,
     subject: str = Depends(require_human_mutation),
 ) -> dict:
@@ -419,12 +422,19 @@ async def rechazar_aprobacion(
         f"rechazada por {subject}",
         None,
     )
+    # Cierra el turno en el chat: Jarvis explica que no se ejecuto nada.
+    background.add_task(
+        _resume_after_decision,
+        approval_id,
+        _rejection_payload(approval_id, reason),
+    )
     return data
 
 
 @app.post("/api/aprobaciones/{approval_id}/ejecutar", tags=["aprobaciones"])
 async def ejecutar_aprobacion(
     approval_id: str,
+    background: BackgroundTasks,
     body: EmptyBody | None = None,
     subject: str = Depends(require_human_mutation),
 ) -> dict:
@@ -448,6 +458,10 @@ async def ejecutar_aprobacion(
         int((time.monotonic() - started) * 1000),
         f"ejecutada por {subject}: {data.get('state')}",
         None,
+    )
+    # Continua la conversacion que origino la solicitud con el resultado real.
+    background.add_task(
+        _resume_after_decision, approval_id, _execution_payload(data)
     )
     return data
 
@@ -489,36 +503,33 @@ async def invoke_tool(tool_name: str, arguments: dict | None = None) -> dict:
 # --------------------------------------------------------------------------- #
 # Conversación
 # --------------------------------------------------------------------------- #
-@app.post(
-    "/api/chat",
-    response_model=ChatResponse,
-    tags=["chat"],
-    dependencies=[Depends(require_auth)],
-)
-async def chat(body: ChatRequest) -> ChatResponse:
-    settings = get_settings()
+# --------------------------------------------------------------------------- #
+# Persistencia de un turno (compartida por /api/chat y /api/chat/stream)
+# --------------------------------------------------------------------------- #
+def _pending_approval_id(content: str | None) -> str | None:
+    """Extrae el id de aprobacion de un resultado de herramienta pendiente."""
+    if not content or "pending_approval" not in content:
+        return None
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("state") != "pending_approval":
+        return None
+    approval = payload.get("approval") or {}
+    if not isinstance(approval, dict):
+        return None
+    approval_id = approval.get("id")
+    return approval_id if isinstance(approval_id, str) and approval_id else None
 
-    conv_id = body.conversation_id
-    if conv_id:
-        exists = await asyncio.to_thread(memory.conversation_exists, conv_id)
-        if not exists:
-            raise HTTPException(404, "Conversación no encontrada")
-    else:
-        conv_id = await asyncio.to_thread(memory.create_conversation, body.message[:60])
 
-    await asyncio.to_thread(memory.add_message, conv_id, "user", body.message)
-    history = await asyncio.to_thread(memory.get_messages, conv_id, settings.history_limit)
+def _persist_turn_sync(conv_id: str, base_len: int, result: dict) -> str:
+    """Persiste los mensajes nuevos de un turno y devuelve el texto final.
 
-    base_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-    state = {
-        "messages": base_messages,
-        "tool_trace": [],
-        "iterations": 0,
-        "conversation_id": conv_id,
-    }
-
-    result = await AGENT.ainvoke(state)
-
+    Recibe el estado final del grafo. Los resultados de herramientas que
+    terminan en `pending_approval` se enlazan con la conversacion para poder
+    reanudarla cuando el humano decida.
+    """
     final = result["messages"][-1]
     reply = final.get("content") or ""
     # Nunca devolver una burbuja vacía: si el modelo no produjo texto (fallo
@@ -537,9 +548,8 @@ async def chat(body: ChatRequest) -> ChatResponse:
 
     # Persistimos solo lo generado en este turno (respuestas intermedias,
     # llamadas y resultados), para conservar el contexto completo.
-    for msg in result["messages"][len(base_messages):]:
-        await asyncio.to_thread(
-            memory.add_message,
+    for msg in result["messages"][base_len:]:
+        memory.add_message(
             conv_id,
             msg.get("role", "assistant"),
             msg.get("content"),
@@ -547,7 +557,54 @@ async def chat(body: ChatRequest) -> ChatResponse:
             msg.get("tool_call_id"),
             msg.get("name"),
         )
-    await asyncio.to_thread(memory.touch_conversation, conv_id)
+        if msg.get("role") == "tool":
+            approval_id = _pending_approval_id(msg.get("content"))
+            if approval_id:
+                memory.link_approval(approval_id, conv_id, msg.get("tool_call_id"))
+    memory.touch_conversation(conv_id)
+    return reply
+
+
+def _prepare_chat(body: ChatRequest) -> tuple[str, list[dict]]:
+    """Valida/crea la conversacion y guarda el mensaje del usuario.
+
+    Devuelve (conversation_id, base_messages) donde base_messages ya incluye
+    el system prompt y el historial completo.
+    """
+    settings = get_settings()
+    conv_id = body.conversation_id
+    if conv_id and not memory.conversation_exists(conv_id):
+        raise HTTPException(404, "Conversación no encontrada")
+    if not conv_id:
+        conv_id = memory.create_conversation(body.message[:60])
+    memory.add_message(conv_id, "user", body.message)
+    history = memory.get_messages(conv_id, settings.history_limit)
+    return conv_id, [{"role": "system", "content": SYSTEM_PROMPT}] + history
+
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post(
+    "/api/chat",
+    response_model=ChatResponse,
+    tags=["chat"],
+    dependencies=[Depends(require_auth)],
+)
+async def chat(body: ChatRequest) -> ChatResponse:
+    conv_id, base_messages = await asyncio.to_thread(_prepare_chat, body)
+    state = {
+        "messages": base_messages,
+        "tool_trace": [],
+        "iterations": 0,
+        "conversation_id": conv_id,
+    }
+
+    result = await AGENT.ainvoke(state)
+    reply = await asyncio.to_thread(
+        _persist_turn_sync, conv_id, len(base_messages), result
+    )
 
     return ChatResponse(
         conversation_id=conv_id,
@@ -555,6 +612,193 @@ async def chat(body: ChatRequest) -> ChatResponse:
         tool_trace=result.get("tool_trace", []),
         model=result.get("model_used"),
     )
+
+
+@app.post(
+    "/api/chat/stream",
+    tags=["chat"],
+    dependencies=[Depends(require_auth)],
+)
+async def chat_stream(body: ChatRequest) -> StreamingResponse:
+    """Chat en streaming (SSE).
+
+    Eventos: `segment` (nueva burbuja), `token` (texto incremental),
+    `tool` (herramienta terminada), `done` (turno persistido) y `error`.
+    """
+    conv_id, base_messages = await asyncio.to_thread(_prepare_chat, body)
+    state = {
+        "messages": base_messages,
+        "tool_trace": [],
+        "iterations": 0,
+        "conversation_id": conv_id,
+    }
+
+    async def event_source():
+        queue: asyncio.Queue = asyncio.Queue()
+        final_state: dict | None = None
+
+        def emit(event: dict) -> None:
+            queue.put_nowait(event)
+
+        async def run_graph() -> None:
+            try:
+                async for snapshot in AGENT.astream(state, stream_mode="values"):
+                    await queue.put({"event": "__state", "state": snapshot})
+            except Exception as exc:  # noqa: BLE001 - se informa al cliente
+                log.exception("chat en streaming fallo")
+                await queue.put({"event": "__error", "detail": str(exc)})
+            finally:
+                await queue.put({"event": "__end"})
+
+        # El ContextVar lo heredan las tareas que crea el grafo.
+        token = STREAM_EMIT.set(emit)
+        task = asyncio.create_task(run_graph())
+        try:
+            while True:
+                event = await queue.get()
+                kind = event.get("event")
+                if kind == "__state":
+                    final_state = event["state"]
+                    continue
+                if kind == "__error":
+                    yield _sse("error", {"detail": event["detail"]})
+                    break
+                if kind == "__end":
+                    break
+                yield _sse(kind, event)
+
+            if final_state is not None:
+                reply = await asyncio.to_thread(
+                    _persist_turn_sync, conv_id, len(base_messages), final_state
+                )
+                yield _sse(
+                    "done",
+                    {
+                        "conversation_id": conv_id,
+                        "reply": reply,
+                        "tool_trace": final_state.get("tool_trace", []),
+                        "model": final_state.get("model_used"),
+                    },
+                )
+        finally:
+            STREAM_EMIT.reset(token)
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            # Evita que proxies intermedios acumulen el stream.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Reanudar la conversacion cuando el humano decide
+# --------------------------------------------------------------------------- #
+def _execution_payload(data: dict) -> dict:
+    stdout = data.get("stdout") or ""
+    if len(stdout) > 12000:
+        stdout = stdout[:12000] + "\n…(salida recortada)"
+    stderr = data.get("stderr") or ""
+    if len(stderr) > 2000:
+        stderr = stderr[:2000] + "\n…(recortado)"
+    return {
+        "ok": bool(data.get("ok")),
+        "state": data.get("state"),
+        "approval_id": data.get("approval_id"),
+        "host": data.get("host"),
+        "operation": data.get("operation"),
+        "exit_code": data.get("exit_code"),
+        "stdout": stdout,
+        "stderr": stderr or None,
+        "duration_ms": data.get("duration_ms"),
+        "error": data.get("error"),
+        "note": "resultado real devuelto por el ejecutor tras la aprobación humana",
+    }
+
+
+def _rejection_payload(approval_id: str, reason: str) -> dict:
+    return {
+        "ok": False,
+        "state": "rejected",
+        "approval_id": approval_id,
+        "error": reason or "el usuario rechazó la solicitud",
+        "note": "la operación NO se ejecutó: el humano la rechazó",
+    }
+
+
+async def _resume_after_decision(approval_id: str, payload: dict) -> None:
+    """Continua el grafo con el resultado de la aprobacion.
+
+    El turno original termino con un tool-message "pending_approval". Aqui se
+    sustituye ese mensaje por el resultado real y se vuelve a invocar al
+    agente para que redacte la respuesta final en la misma conversacion.
+    """
+    link = await asyncio.to_thread(memory.get_approval_context, approval_id)
+    if not link:
+        return
+    conv_id = link["conversation_id"]
+    tool_call_id = link.get("tool_call_id")
+    messages = await asyncio.to_thread(memory.get_messages, conv_id, None)
+
+    index = None
+    if tool_call_id:
+        for position, message in enumerate(messages):
+            if (
+                message.get("role") == "tool"
+                and message.get("tool_call_id") == tool_call_id
+            ):
+                index = position
+                break
+    if index is None:
+        for position in range(len(messages) - 1, -1, -1):
+            message = messages[position]
+            if message.get("role") == "tool" and approval_id in (
+                message.get("content") or ""
+            ):
+                index = position
+                break
+    if index is None:
+        log.warning("sin contexto de herramienta para la aprobacion %s", approval_id)
+        return
+
+    history = [dict(message) for message in messages[: index + 1]]
+    history[index]["content"] = json.dumps(payload, ensure_ascii=False)
+    base = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    state = {
+        "messages": base,
+        "tool_trace": [],
+        "iterations": 0,
+        "conversation_id": conv_id,
+    }
+
+    try:
+        result = await AGENT.ainvoke(state)
+        reply = await asyncio.to_thread(
+            _persist_turn_sync, conv_id, len(base), result
+        )
+        await asyncio.to_thread(
+            memory.add_audit,
+            "aprobacion:reanudar",
+            {"approval_id": approval_id},
+            True,
+            0,
+            f"chat reanudado: {reply[:80]}",
+            conv_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - nunca romper la respuesta humana
+        log.exception("no se pudo reanudar el chat tras %s", approval_id)
+        fallback = (
+            "La decisión se registró, pero no pude redactar el resumen en el "
+            f"chat ({exc}). El resultado real está en la pestaña Aprobaciones."
+        )
+        await asyncio.to_thread(memory.add_message, conv_id, "assistant", fallback)
+        await asyncio.to_thread(memory.touch_conversation, conv_id)
 
 
 @app.get(

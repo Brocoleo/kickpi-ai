@@ -151,3 +151,37 @@ def list_audit(limit: int = 50) -> list[dict]:
         d["ok"] = bool(d["ok"])
         out.append(d)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Aprobaciones: vinculo con el turno de conversacion
+# --------------------------------------------------------------------------- #
+def link_approval(
+    approval_id: str, conversation_id: str, tool_call_id: str | None = None
+) -> None:
+    """Guarda que turno/conversacion origino una aprobacion pendiente.
+
+    Si la misma aprobacion se vuelve a enlazar (p.ej. el ejecutor deduplica
+    una peticion identica), gana el contexto mas reciente.
+    """
+    with session() as conn:
+        conn.execute(
+            "INSERT INTO approval_context "
+            "(approval_id, conversation_id, tool_call_id, created_at) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(approval_id) DO UPDATE SET "
+            "conversation_id=excluded.conversation_id, "
+            "tool_call_id=excluded.tool_call_id, "
+            "created_at=excluded.created_at",
+            (approval_id, conversation_id, tool_call_id, _now()),
+        )
+
+
+def get_approval_context(approval_id: str) -> dict | None:
+    with session() as conn:
+        row = conn.execute(
+            "SELECT approval_id, conversation_id, tool_call_id, created_at "
+            "FROM approval_context WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()
+    return dict(row) if row else None

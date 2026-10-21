@@ -169,7 +169,7 @@ describe("confirmación en dos pasos", () => {
     await waitFor(() => expect(screen.getByText("host_git_diff_stat")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /^Aprobar y ejecutar/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Volver" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(apiMock.approve).not.toHaveBeenCalled();

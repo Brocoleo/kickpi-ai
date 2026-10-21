@@ -10,6 +10,7 @@ import type {
   LlmStatus,
   StoredMessage,
   SystemStats,
+  ToolTrace,
 } from "./types";
 
 export class ApiError extends Error {
@@ -64,6 +65,21 @@ function mutate<T>(path: string, body?: unknown, csrfToken?: string | null): Pro
   });
 }
 
+export type ChatStreamDone = {
+  conversation_id: string;
+  reply: string;
+  tool_trace: ToolTrace[];
+  model: string | null;
+};
+
+export type ChatStreamHandlers = {
+  onSegment: () => void;
+  onToken: (text: string) => void;
+  onTool: (tool: ToolTrace) => void;
+  onDone: (data: ChatStreamDone) => void;
+  onError: (detail: string) => void;
+};
+
 export const api = {
   me: () => request<AuthMe>("/auth/me"),
 
@@ -80,6 +96,92 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, conversation_id: conversationId }),
     }),
+
+  /**
+   * Chat en streaming (SSE sobre fetch, porque EventSource no permite POST).
+   * Los eventos llegan en orden: segment → token* → (tool*) → … → done.
+   */
+  chatStream: async (
+    message: string,
+    conversationId: string | null,
+    handlers: ChatStreamHandlers,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, conversation_id: conversationId }),
+      signal,
+    });
+
+    if (!res.ok || !res.body) {
+      let detail = res.statusText || `HTTP ${res.status}`;
+      try {
+        const data = (await res.json()) as { detail?: unknown };
+        if (typeof data.detail === "string") detail = data.detail;
+      } catch {
+        /* respuesta sin JSON */
+      }
+      throw new ApiError(res.status, detail);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const dispatch = (raw: string) => {
+      let eventName = "message";
+      const dataLines: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).replace(/^ /, ""));
+        }
+      }
+      if (dataLines.length === 0) return;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      switch (eventName) {
+        case "segment":
+          handlers.onSegment();
+          break;
+        case "token":
+          if (typeof payload.text === "string") handlers.onToken(payload.text);
+          break;
+        case "tool":
+          handlers.onTool(payload as unknown as ToolTrace);
+          break;
+        case "done":
+          handlers.onDone(payload as unknown as ChatStreamDone);
+          break;
+        case "error":
+          handlers.onError(
+            typeof payload.detail === "string" ? payload.detail : "Error en el chat",
+          );
+          break;
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const raw = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (raw.trim()) dispatch(raw);
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+    if (buffer.trim()) dispatch(buffer);
+  },
 
   tool: <T>(name: string, args: Record<string, unknown> = {}) =>
     request<T>(`/tools/${name}`, {
@@ -130,6 +232,12 @@ export const api = {
       duration_ms: number | null;
       error: string | null;
     }>(`/aprobaciones/${encodeURIComponent(id)}/ejecutar`, undefined, csrfToken),
+
+  conversations: () =>
+    request<{
+      conversations: { id: string; title: string; updated_at: string }[];
+      count: number;
+    }>("/conversations"),
 
   conversation: (id: string) =>
     request<{ conversation_id: string; messages: StoredMessage[] }>(

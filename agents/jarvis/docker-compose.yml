@@ -67,7 +67,7 @@ services:
 
   jarvis-executor:
     build: ./executor
-    image: jarvis-executor:0.4
+    image: jarvis-executor:0.5
     container_name: jarvis-executor
     restart: unless-stopped
     environment:
@@ -111,7 +111,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.3
+    image: jarvis-agent:0.4
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:

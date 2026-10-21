@@ -4,7 +4,6 @@ import { Aprobaciones } from "./components/Aprobaciones";
 import { Chat } from "./components/Chat";
 import { Equipos } from "./components/Equipos";
 import { Files } from "./components/Files";
-import { Metrics } from "./components/Metrics";
 import { Settings } from "./components/Settings";
 import { TabBar, type Tab } from "./components/TabBar";
 import { Login } from "./components/Login";
@@ -151,8 +150,7 @@ export default function App() {
 
       <main className={`main ${tab === "chat" ? "chat-mode" : ""}`}>
         {tab === "chat" && <Chat onUnauthorized={handleUnauthorized} />}
-        {tab === "metrics" && <Metrics onUnauthorized={handleUnauthorized} />}
-        {tab === "equipos" && <Equipos />}
+        {tab === "equipos" && <Equipos onUnauthorized={handleUnauthorized} />}
         {tab === "files" && <Files />}
         {tab === "approvals" && (
           <Aprobaciones

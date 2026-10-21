@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import approvals, audit, policy
 from .config import get_settings
 from .registry import Host, load_registry
-from .runner import run
+from .runner import run, _run_ssh_probe, _run_local
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-executor")
@@ -33,7 +33,8 @@ app = FastAPI(
 
 # Cache corta del estado de los hosts para no abrir una conexion SSH por consulta.
 _STATUS_CACHE: dict[str, tuple[float, dict]] = {}
-_STATUS_TTL = 8.0
+_STATUS_TTL = 30.0
+PROBE_TIMEOUT = 3.0
 
 
 async def require_token(
@@ -177,10 +178,14 @@ async def _probe(host: Host) -> dict:
     started = time.monotonic()
     if not host.enabled:
         result = {"online": False, "reason": "host deshabilitado"}
+    elif host.transport == "local":
+        # Host local: uname directo, sin SSH
+        run_result = await _run_local(["uname", "-sr"], PROBE_TIMEOUT)
     elif host.transport == "ssh" and not host.address:
         result = {"online": False, "reason": "sin direccion configurada"}
     else:
-        run_result = await run(host, ["uname", "-sr"], timeout=settings.status_timeout)
+        # Health-check agresivo: 3 s totales, sin reintentos de conexión
+        run_result = await _run_ssh_probe(host, ["uname", "-sr"], PROBE_TIMEOUT)
         if run_result.error:
             result = {"online": False, "reason": run_result.error}
         else:

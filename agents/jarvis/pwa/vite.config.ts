@@ -9,6 +9,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      injectRegister: false,
       includeAssets: ["favicon.svg", "apple-touch-icon.png"],
       manifest: {
         name: "Jarvis — KICKPI",
@@ -33,6 +34,11 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Una version nueva toma el control de inmediato: sin esperar a que
+        // se cierren todas las pestanas (Safari en iPhone puede tardar dias).
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
         navigateFallback: "/index.html",
         // La API y la salud NUNCA se sirven desde caché.

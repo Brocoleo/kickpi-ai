@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
 import { shortModel } from "../lib/format";
 import type { AuthMe, Health, LlmStatus } from "../types";
-import { LogoutIcon, ShieldIcon } from "./icons";
+import { LogoutIcon, RefreshIcon, ShieldIcon } from "./icons";
 
 type Props = {
   me: AuthMe | null;
@@ -15,6 +15,7 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
   const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +41,26 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
       cancelled = true;
     };
   }, [onUnauthorized]);
+
+  // Boton de rescate: borra Service Worker + caches y recarga desde la red.
+  // Sirve cuando el iPhone conserva un bundle viejo atascado.
+  async function refreshApp() {
+    if (updating) return;
+    setUpdating(true);
+    try {
+      if ("serviceWorker" in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+      }
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch {
+      /* aunque falle la limpieza, recargamos */
+    }
+    window.location.reload();
+  }
 
   async function logout() {
     if (busy) return;
@@ -79,11 +100,33 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
             <dt>Contraseña propia</dt>
             <dd>{me?.password_configured ? "configurada" : "no (usa el token)"}</dd>
           </div>
+        </dl>
+      </section>
+
+      <section className="card">
+        <header className="card-head">
+          <h2>Aplicación</h2>
+          <span className="pill">{updating ? "actualizando" : "al día"}</span>
+        </header>
+        <dl className="kv">
           <div>
             <dt>Build PWA</dt>
             <dd className="mono">{health?.static_asset ?? "—"}</dd>
           </div>
         </dl>
+        <button
+          className="btn"
+          type="button"
+          onClick={() => void refreshApp()}
+          disabled={updating}
+        >
+          <RefreshIcon />
+          {updating ? "Limpiando caché…" : "Buscar actualización"}
+        </button>
+        <p className="muted">
+          Si la app se ve vieja o una pantalla no cambia, esto borra la caché
+          local y vuelve a descargarla.
+        </p>
       </section>
 
       <section className="card">

@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS session_subjects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_subjects_created ON session_subjects(created_at);
+
+-- Vinculo entre una aprobacion pendiente y el turno de conversacion que la
+-- origino. Permite reanudar el grafo cuando el humano ejecuta o rechaza,
+-- para que el chat reciba la respuesta final (y no se quede a medias).
+CREATE TABLE IF NOT EXISTS approval_context (
+    approval_id     TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    tool_call_id    TEXT,
+    created_at      TEXT NOT NULL
+);
 """
 
 
