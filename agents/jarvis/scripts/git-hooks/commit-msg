@@ -1,0 +1,7 @@
+#!/bin/sh
+# Hook versionado: valida el mensaje antes de que el commit exista.
+# Se activa una vez desde este directorio con: ./scripts/check-commit.sh --install
+# La ruta se resuelve desde el propio hook, así que funciona aunque el
+# proyecto viva en un subdirectorio del repo.
+aqui="$(cd "$(dirname "$0")" && pwd)"
+exec "$aqui/../check-commit.sh" "$1"

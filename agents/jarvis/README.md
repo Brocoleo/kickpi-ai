@@ -139,6 +139,47 @@ cd pwa && npm run dev
 # Vite hace proxy de /api, /health y /files a http://localhost:8888
 ```
 
+## Commits
+
+Un commit tiene que entenderse **sin abrir el código**: qué cambia en el
+título y, en el cuerpo, por qué, qué se tocó y cómo se comprobó. Dentro de un
+año, `git log` debe contar la historia del proyecto sin ayuda.
+
+```
+tipo(ámbito): resumen en minúsculas, sin punto final
+
+Resumen
+Qué cambia, en dos o tres frases.
+
+Causa
+El problema real, no el síntoma.
+
+Qué cambió
+Los archivos o decisiones que importan.
+
+Pruebas
+Qué se ejecutó y qué salió.
+```
+
+El hook se instala una vez (queda versionado en `scripts/git-hooks/`):
+
+```bash
+./scripts/check-commit.sh --install
+```
+
+Desde entonces `git commit` rechaza títulos sin tipo, títulos de más de 72
+columnas, cuerpos vacíos y, en `feat`/`fix`/`perf`/`refactor`, secciones
+ausentes. `chore`, `docs`, `ci`, `build` y `test` admiten un cuerpo más corto.
+`Merge`, `Revert` y `fixup!` pasan sin revisar.
+
+```bash
+./scripts/check-commit.sh --last          # revisa HEAD
+git log -1 --format=%B | ./scripts/check-commit.sh -   # lo que se va a commitear
+```
+
+`deploy-all.sh` revisa el commit que va a desplegar y **avisa** si no cumple;
+no bloquea: reescribir historia para arreglar un mensaje es peor que el aviso.
+
 ## Banco de pruebas
 
 Cinco capas, de más rápida a más real. Ninguna necesita sudo.

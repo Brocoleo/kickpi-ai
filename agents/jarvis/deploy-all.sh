@@ -56,8 +56,22 @@ remote_sudo() {
   ssh "${SSH_OPTS[@]}" -t "$BOARD" "$1"
 }
 
+# --- El commit que se despliega se explica solo -----------------------------
+# Se avisa, no se bloquea: el commit ya existe y reescribir historia para
+# arreglar un mensaje es peor que desplegar con un aviso. La puerta de verdad
+# está en el hook de commit (scripts/git-hooks/commit-msg).
+revisar_commit() {
+  [ -x "$HERE/scripts/check-commit.sh" ] || return 0
+  local salida
+  if ! salida="$("$HERE/scripts/check-commit.sh" --last 2>&1)"; then
+    ambar "· el último commit no sigue la convención (aviso, no bloqueo):"
+    printf '%s\n' "$salida" | head -8 | sed 's/^/    /'
+  fi
+}
+
 # --- Sincronizar código (sin sudo: /home/leandro/jarvis es tuyo) -----------
 sincronizar_codigo() {
+  revisar_commit
   paso "1/4 sincronizando código a $BOARD"
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/agent/app/" "$BOARD:$REMOTE_DIR/agent/app/"
