@@ -244,6 +244,7 @@ async def execute(body: ExecRequest) -> dict:
         audit.record(
             body.host, body.operation, body.params or {}, allowed=False, ok=False,
             error=f"pendiente de aprobacion: {approval['id']}",
+            approval_id=approval["id"],
         )
         log.info(
             "solicitud de aprobacion %s host=%s op=%s", approval["id"], body.host, body.operation
@@ -485,28 +486,32 @@ async def execute_approval(approval_id: str) -> dict:
     if len(stdout) > settings.max_output_bytes:
         stdout = stdout[: settings.max_output_bytes] + "\n[...salida truncada...]"
 
-    # 5. Cierre + auditoria. Un exit != 0 es un resultado legitimo
-    #    (`consumed`); un error de transporte deja la solicitud `failed`
-    #    y NO se reintenta nunca.
+    # 5. Cierre + auditoria ATÓMICOS: aprobación y fila de auditoría viven en
+    #    el mismo SQLite, así que van en una sola transacción. Si el proceso
+    #    muere, o quedan ambas o ninguna (nunca una ejecución sin auditoría).
     executed = result.error is None
-    approvals.finish(
-        approval_id,
-        executed=executed,
-        exit_code=result.exit_code,
-        duration_ms=result.duration_ms,
-        error=result.error,
-    )
-    audit.record(
-        claimed["host"],
-        claimed["operation"],
-        {**(claimed["params"] or {}), "approval_id": approval_id},
-        allowed=True,
-        ok=result.ok,
-        exit_code=result.exit_code,
-        duration_ms=result.duration_ms,
-        output=stdout,
-        error=result.error,
-    )
+    with audit.transaction() as conn:
+        approvals.finish(
+            approval_id,
+            executed=executed,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+            error=result.error,
+            conn=conn,
+        )
+        audit.record(
+            claimed["host"],
+            claimed["operation"],
+            claimed["params"] or {},
+            allowed=True,
+            ok=result.ok,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+            output=stdout,
+            error=result.error,
+            approval_id=approval_id,
+            conn=conn,
+        )
     return {
         "ok": result.ok,
         "denied": False,

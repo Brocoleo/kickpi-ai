@@ -41,7 +41,7 @@ asset_remoto() {
 }
 
 asset_health() {
-  remote "curl -s --max-time 5 '$HEALTH_URL'" \
+  remote "curl -sS -f --max-time 5 '$HEALTH_URL'" \
     | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("static_asset") or "")
 except Exception: print("")' 2>/dev/null || true
@@ -55,7 +55,7 @@ verificar() {
 
   echo "  build local   : ${local_a:-<ninguno>}"
   echo "  placa (disco) : ${remoto_a:-<ninguno>}"
-  echo "  /health sirve : ${health_a:-<vacío>}"
+  echo "  /health sirve : ${health_a:-<vacío o inaccesible>}"
 
   if [ -z "$local_a" ]; then
     rojo "  ✗ no hay build local (falta agent/static/index.html)"
@@ -65,8 +65,12 @@ verificar() {
     rojo "  ✗ la placa tiene un build DISTINTO ($remoto_a)"
     errores=1
   fi
+  # Decir "desplegado" con Jarvis inaccesible es peor que fallar: /health
+  # debe responder y debe reportar EXACTAMENTE el bundle publicado.
   if [ -z "$health_a" ]; then
-    ambar "  ! /health no reporta static_asset (backend antiguo: reinicia el agente)"
+    rojo "  ✗ /health no responde o no reporta static_asset: Jarvis no está sirviendo la PWA"
+    rojo "    (si el backend es anterior a este cambio, recompila y recrea jarvis-agent)"
+    errores=1
   elif [ "$health_a" != "$local_a" ]; then
     rojo "  ✗ /health sirve otro bundle ($health_a)"
     errores=1
@@ -75,12 +79,28 @@ verificar() {
 }
 
 sincronizar() {
-  # Guarda anti-desastre: jamás sincronizar (con --delete) sin un build real.
+  # Guarda anti-desastre: jamás sincronizar sin un build real.
   if [ ! -s "$STATIC/index.html" ] || [ -z "$(asset_local)" ]; then
     rojo "✗ abortado: no hay build válido en $STATIC (no se toca la placa)"
     return 1
   fi
-  rsync -az --delete -e "$RSYNC_SSH" "$STATIC/" "$BOARD:$REMOTE_STATIC/"
+
+  # Publicación en dos fases para no romper clientes abiertos:
+  #   1. primero los assets nuevos (los bundles viejos se CONSERVAN);
+  #   2. al final el shell (index.html, sw.js, manifest), que es lo que
+  #      apunta a los assets nuevos.
+  # Un iPhone con el HTML viejo sigue encontrando su bundle antiguo.
+  rsync -az -e "$RSYNC_SSH" \
+    --include='/assets/***' --exclude='*' \
+    "$STATIC/" "$BOARD:$REMOTE_STATIC/"
+  rsync -az -e "$RSYNC_SSH" \
+    --exclude='/assets/' \
+    "$STATIC/" "$BOARD:$REMOTE_STATIC/"
+
+  # Limpieza diferida: se borran bundles con más de KEEP_DAYS días. Suficiente
+  # para que una PWA abierta termine de actualizarse, sin acumular basura.
+  local keep_days="${JARVIS_KEEP_DAYS:-7}"
+  remote "find '$REMOTE_STATIC/assets' -type f -mtime +$keep_days -delete" || true
 }
 
 deploy() {

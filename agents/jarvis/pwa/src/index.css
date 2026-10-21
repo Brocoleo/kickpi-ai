@@ -1146,6 +1146,17 @@ code {
   color: var(--muted);
   font-size: 10.5px;
   letter-spacing: 0.02em;
+  /* En pantallas estrechas la etiqueta no debe partirse ni quedar cortada
+     por el alto del tab: se recorta con puntos suspensivos. */
+  min-width: 0;
+}
+
+.tab > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 2px;
 }
 
 .tab-icon {
@@ -1662,6 +1673,13 @@ code {
 .approval-actions .btn {
   flex: 1 1 130px;
   min-height: 44px;
+}
+
+/* El botón de rechazar debe distinguirse del fondo de la tarjeta: usa el
+   tinte de peligro y pierde el margen superior que trae .btn.danger. */
+.approval-actions .btn.danger {
+  margin-top: 0;
+  font-weight: 600;
 }
 
 .approval-result {

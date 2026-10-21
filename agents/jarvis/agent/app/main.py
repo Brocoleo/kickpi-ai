@@ -521,6 +521,19 @@ async def chat(body: ChatRequest) -> ChatResponse:
 
     final = result["messages"][-1]
     reply = final.get("content") or ""
+    # Nunca devolver una burbuja vacía: si el modelo no produjo texto (fallo
+    # del proveedor, respuesta vacía, etc.) se muestra un mensaje explícito
+    # y se persiste con ese texto para que el historial sea coherente.
+    if not reply.strip():
+        if final.get("role") == "assistant" and not final.get("tool_calls"):
+            reply = (
+                "El modelo no devolvió texto en esta ocasión. "
+                "Puede ser un fallo transitorio del proveedor gratuito: "
+                "reintenta la petición o reformúlala."
+            )
+            final["content"] = reply
+        else:
+            reply = "No obtuve una respuesta final del agente. Reintenta la petición."
 
     # Persistimos solo lo generado en este turno (respuestas intermedias,
     # llamadas y resultados), para conservar el contexto completo.

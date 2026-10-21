@@ -381,16 +381,18 @@ def test_flujo_completo_aprobar_y_ejecutar_git_real(api, repo):
     assert final["approved_by"] == "leandro"
     assert final["exit_code"] == 0
 
-    # Auditoria: una sola ejecucion permitida, con el approval_id en los params.
+    # Auditoria: una sola ejecucion permitida, con el approval_id en su
+    # columna propia (separado de los parametros, que nunca se truncan).
     conn = sqlite3.connect(get_settings().audit_db)
     rows = conn.execute(
-        "SELECT operation, allowed, ok, exit_code, params_json FROM executions"
+        "SELECT operation, allowed, ok, exit_code, params_json, approval_id FROM executions"
     ).fetchall()
     conn.close()
     audited = [r for r in rows if r[0] == OP and r[1] == 1]
     assert len(audited) == 1
     assert audited[0][3] == 0
-    assert aid in audited[0][4]
+    assert audited[0][5] == aid
+    assert json.loads(audited[0][4]) == {"path": str(repo)}
 
 
 def test_rechazar_impide_la_ejecucion(api, repo):

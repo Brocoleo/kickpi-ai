@@ -126,21 +126,76 @@ async def _run_tools(state: AgentState) -> dict:
 
 
 def _should_continue(state: AgentState) -> str:
-    if state.get("iterations", 0) >= get_settings().max_tool_iterations:
-        return "end"
     last = state["messages"][-1]
-    if last.get("role") == "assistant" and last.get("tool_calls"):
-        return "tools"
-    return "end"
+    pending_calls = bool(
+        last.get("role") == "assistant" and last.get("tool_calls")
+    )
+    if state.get("iterations", 0) >= get_settings().max_tool_iterations:
+        # Si el modelo se quedó pidiendo herramientas, NO se termina en seco:
+        # se pasa por un nodo que cancela las llamadas pendientes y deja una
+        # respuesta de texto visible para el usuario.
+        return "limit" if pending_calls else "end"
+    return "tools" if pending_calls else "end"
+
+
+async def _close_on_limit(state: AgentState) -> dict:
+    """Cierre explícito al agotar el presupuesto de iteraciones.
+
+    - Resuelve cada `tool_call` pendiente con un mensaje `tool` (si se dejara
+      sin respuesta, el historial quedaría inválido para la siguiente
+      petición).
+    - Añade un mensaje de asistente con texto, de modo que la PWA nunca
+      muestre una burbuja vacía.
+    """
+    last = state["messages"][-1]
+    limit = get_settings().max_tool_iterations
+    new_messages: list[dict] = []
+    for call in last.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        new_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call.get("id"),
+                "name": fn.get("name", ""),
+                "content": json.dumps(
+                    {
+                        "error": "cancelado: se alcanzó el límite de pasos del agente",
+                        "hint": "repregunta de forma más concreta o divide la tarea",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+
+    trace = state.get("tool_trace", [])
+    new_messages.append(
+        {
+            "role": "assistant",
+            "content": (
+                f"Me detuve al alcanzar el límite de {limit} pasos con herramientas. "
+                "Ya tengo parte del trabajo hecho (mira las tarjetas de actividad), "
+                "pero no llegué a redactar la respuesta final. "
+                "Pídeme el resumen concreto o divide la tarea en pasos más pequeños."
+            ),
+        }
+    )
+    return {
+        "messages": state["messages"] + new_messages,
+        "tool_trace": trace,
+    }
 
 
 def build_graph():
     graph = StateGraph(AgentState)
     graph.add_node("model", _call_model)
     graph.add_node("tools", _run_tools)
+    graph.add_node("limit", _close_on_limit)
     graph.set_entry_point("model")
-    graph.add_conditional_edges("model", _should_continue, {"tools": "tools", "end": END})
+    graph.add_conditional_edges(
+        "model", _should_continue, {"tools": "tools", "limit": "limit", "end": END}
+    )
     graph.add_edge("tools", "model")
+    graph.add_edge("limit", END)
     return graph.compile()
 
 

@@ -424,14 +424,20 @@ def finish(
     exit_code: int | None = None,
     duration_ms: int | None = None,
     error: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     """Cierra una ejecucion reclamada.
 
     `consumed` = se ejecuto (un exit != 0 es un resultado legitimo).
     `failed` = no se pudo comunicar o el resultado es incierto. En ambos
     casos la aprobacion queda GASTADA: nunca vuelve a `approved`.
+
+    Si se pasa `conn`, la actualización se hace dentro de la transacción del
+    llamador (sin commit propio): así el cierre de la aprobación y su fila de
+    auditoría son atómicos.
     """
-    conn = _connect()
+    own = conn is None
+    conn = conn or _connect()
     try:
         row = conn.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()
         if row is None:
@@ -444,11 +450,13 @@ def finish(
             "WHERE id=? AND status='executing'",
             (new_status, exit_code, duration_ms, error, approval_id),
         )
-        conn.commit()
+        if own:
+            conn.commit()
         row = conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
         return _to_dict(row)
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def verify_against_registry(approval: dict, decision: Any) -> str | None:

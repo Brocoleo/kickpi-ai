@@ -218,7 +218,7 @@ function ApprovalCard({
           </button>
           <button
             type="button"
-            className="btn"
+            className="btn danger"
             onClick={onReject}
             disabled={busy}
             aria-label={`Rechazar ${approval.operation} en ${approval.host}`}

@@ -25,12 +25,29 @@ CREATE TABLE IF NOT EXISTS executions (
     exit_code     INTEGER,
     duration_ms   INTEGER,
     output_excerpt TEXT,
-    error         TEXT
+    error         TEXT,
+    approval_id   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_exec_created ON executions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_exec_host ON executions(host_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exec_approval ON executions(approval_id);
 """
+
+#: Los parametros se guardan completos. Si algún día superan este tamaño se
+#: guarda un sobre JSON VÁLIDO con la vista previa: nunca JSON truncado.
+_MAX_PARAMS_JSON = 20_000
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(executions)")}
+    # Migracion de bases creadas antes de la columna approval_id.
+    if "approval_id" not in columns:
+        conn.execute("ALTER TABLE executions ADD COLUMN approval_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_exec_approval ON executions(approval_id)"
+        )
 
 
 def _connect() -> sqlite3.Connection:
@@ -46,9 +63,29 @@ def _connect() -> sqlite3.Connection:
 def _cursor():
     conn = _connect()
     try:
-        conn.executescript(SCHEMA)
+        _ensure_schema(conn)
         yield conn
         conn.commit()
+    finally:
+        conn.close()
+
+
+@contextmanager
+def transaction():
+    """Transacción explícita que el llamador puede compartir.
+
+    Las aprobaciones y la auditoría viven en el MISMO archivo SQLite, así que
+    una sola transacción puede cubrir «marcar consumida» + «insertar la fila
+    de auditoría»: o quedan las dos, o no queda ninguna.
+    """
+    conn = _connect()
+    try:
+        _ensure_schema(conn)
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -63,27 +100,41 @@ def record(
     duration_ms: int | None = None,
     output: str = "",
     error: str | None = None,
+    approval_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     excerpt = output[:4000]
-    with _cursor() as conn:
-        conn.execute(
-            "INSERT INTO executions(created_at, host_id, operation, params_json, "
-            "allowed, ok, exit_code, duration_ms, output_excerpt, error) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                now,
-                host_id,
-                operation,
-                json.dumps(params, ensure_ascii=False)[:1000],
-                1 if allowed else 0,
-                1 if ok else 0,
-                exit_code,
-                duration_ms,
-                excerpt,
-                error,
-            ),
+    raw = json.dumps(params, ensure_ascii=False)
+    if len(raw) > _MAX_PARAMS_JSON:
+        raw = json.dumps(
+            {"_truncated": True, "_preview": raw[:_MAX_PARAMS_JSON]},
+            ensure_ascii=False,
         )
+    sql = (
+        "INSERT INTO executions(created_at, host_id, operation, params_json, "
+        "allowed, ok, exit_code, duration_ms, output_excerpt, error, approval_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+    )
+    values = (
+        now,
+        host_id,
+        operation,
+        raw,
+        1 if allowed else 0,
+        1 if ok else 0,
+        exit_code,
+        duration_ms,
+        excerpt,
+        error,
+        approval_id,
+    )
+    if conn is not None:
+        # Transacción del llamador: no se hace commit aquí.
+        conn.execute(sql, values)
+        return
+    with _cursor() as own:
+        own.execute(sql, values)
 
 
 def recent(limit: int = 50) -> list[dict]:

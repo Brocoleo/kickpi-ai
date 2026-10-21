@@ -236,13 +236,16 @@ def test_full_flow_approve_then_execute_once(api, monkeypatch):
 
     conn = sqlite3.connect(get_settings().audit_db)
     rows = conn.execute(
-        "SELECT operation, allowed, ok, exit_code, params_json FROM executions"
+        "SELECT operation, allowed, ok, exit_code, params_json, approval_id FROM executions"
     ).fetchall()
     conn.close()
     audited = [r for r in rows if r[0] == "op_approval" and r[1] == 1]
     assert len(audited) == 1
     assert audited[0][3] == 0
-    assert created["id"] in audited[0][4]
+    # El approval_id vive en su propia columna (nunca se trunca con los params).
+    assert audited[0][5] == created["id"]
+    # Y los parámetros siguen siendo JSON válido.
+    assert json.loads(audited[0][4]) == {}
 
 
 def test_execute_without_approval_is_refused(api):
