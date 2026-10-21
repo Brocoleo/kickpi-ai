@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls      TEXT,
     tool_call_id    TEXT,
     name            TEXT,
+    -- Metadatos de la llamada a herramienta, para poder reconstruir el
+    -- historial con el mismo detalle que el streaming en vivo (el JSON de
+    -- `content` es el resultado crudo: no incluye duración ni resumen).
+    tool_ok         INTEGER,
+    tool_duration_ms INTEGER,
+    tool_summary    TEXT,
     created_at      TEXT NOT NULL
 );
 
@@ -100,3 +106,23 @@ def session():
 def init_db() -> None:
     with session() as conn:
         conn.executescript(SCHEMA)
+        _migrar(conn)
+
+
+# Columnas añadidas después de la primera versión. `CREATE TABLE IF NOT
+# EXISTS` no toca una tabla ya creada, así que se añaden explícitamente.
+# Es aditivo e idempotente: nunca borra ni reescribe datos.
+MIGRACIONES: tuple[tuple[str, str, str], ...] = (
+    ("messages", "tool_ok", "INTEGER"),
+    ("messages", "tool_duration_ms", "INTEGER"),
+    ("messages", "tool_summary", "TEXT"),
+)
+
+
+def _migrar(conn: sqlite3.Connection) -> None:
+    for tabla, columna, tipo in MIGRACIONES:
+        existentes = {
+            fila["name"] for fila in conn.execute(f"PRAGMA table_info({tabla})")
+        }
+        if columna not in existentes:
+            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}")

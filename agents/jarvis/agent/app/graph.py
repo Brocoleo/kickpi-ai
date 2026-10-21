@@ -151,7 +151,16 @@ async def _run_tools(state: AgentState) -> dict:
             }
         )
         trace.append(
-            {"tool": name, "arguments": args, "ok": ok, "duration_ms": duration, "summary": summary}
+            {
+                "tool": name,
+                "arguments": args,
+                "ok": ok,
+                "duration_ms": duration,
+                "summary": summary,
+                # Permite a la persistencia asociar el resultado con su
+                # llamada y guardar ok/duración/resumen en el historial.
+                "tool_call_id": call.get("id"),
+            }
         )
         emit = STREAM_EMIT.get()
         if emit is not None:

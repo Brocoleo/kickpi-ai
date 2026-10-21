@@ -514,6 +514,8 @@ code {
   max-width: 720px;
   height: 100%;
   margin: 0 auto;
+  /* El botón «ir al final» se ancla sobre el compositor. */
+  position: relative;
 }
 
 .chat-head {
@@ -522,6 +524,72 @@ code {
   justify-content: space-between;
   gap: 12px;
   padding: 14px 18px 6px;
+}
+
+.chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-toast {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(94, 234, 212, 0.12);
+  color: var(--accent);
+  font-size: 11.5px;
+}
+
+.chat-menu-wrap {
+  position: relative;
+}
+
+.chat-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 196px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.chat-menu button {
+  padding: 9px 11px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.chat-menu button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.day-sep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0 2px;
+  color: #5f6c7e;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.day-sep::before,
+.day-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
 }
 
 .chat-scroll {
@@ -600,11 +668,20 @@ code {
 }
 
 .msg-role {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   padding: 0 4px;
   color: var(--muted);
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
+}
+
+.msg-role time {
+  color: #55637a;
+  font-size: 10px;
+  letter-spacing: 0.04em;
 }
 
 .bubble {
@@ -701,6 +778,157 @@ code {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+/* --- Actividad de herramientas agrupada ------------------------------- */
+.tool-activity {
+  width: 100%;
+  max-width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.015);
+  overflow: hidden;
+}
+
+.tool-activity.has-fail {
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+.tool-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.tool-activity-head svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.tool-activity-title {
+  font-weight: 600;
+}
+
+.tool-activity-meta {
+  margin-left: auto;
+  color: #5f6c7e;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.tool-activity.has-fail .tool-activity-meta {
+  color: #fca5a5;
+}
+
+.tool-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 10px 9px;
+  list-style: none;
+}
+
+.tool-step {
+  padding: 6px 0 4px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.tool-step-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.tool-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.tool-step.fail .tool-dot {
+  background: var(--danger);
+}
+
+.tool-name {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.tool-ms,
+.tool-result {
+  color: #5f6c7e;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.tool-result {
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tool-step.fail .tool-result {
+  color: #fca5a5;
+}
+
+.tool-summary {
+  margin: 3px 0 0 13px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tool-args {
+  margin: 4px 0 0 13px;
+}
+
+.tool-args summary {
+  color: #5f6c7e;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tool-args pre {
+  margin: 5px 0 0;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+  color: #a9b6c8;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-x: auto;
+}
+
+.scroll-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 84px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
 }
 
 .bubble.thinking {

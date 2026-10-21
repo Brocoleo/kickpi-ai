@@ -26,12 +26,24 @@ export type ChatResponse = {
   model: string | null;
 };
 
+export type ToolCall = {
+  id?: string;
+  type?: string;
+  function: { name: string; arguments: string };
+};
+
 export type StoredMessage = {
   id: number;
   role: string;
   content: string | null;
-  tool_calls: string | null;
+  tool_calls: ToolCall[] | null;
+  tool_call_id: string | null;
+  name: string | null;
   created_at: string;
+  /** Metadatos de la sonda, solo en mensajes de rol `tool`. */
+  tool_ok?: boolean;
+  tool_duration_ms?: number;
+  tool_summary?: string;
 };
 
 export type SystemStats = {

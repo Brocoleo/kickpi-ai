@@ -49,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 
 @asynccontextmanager
@@ -553,7 +553,15 @@ def _persist_turn_sync(conv_id: str, base_len: int, result: dict) -> str:
 
     # Persistimos solo lo generado en este turno (respuestas intermedias,
     # llamadas y resultados), para conservar el contexto completo.
+    # La traza dice si la herramienta falló, cuánto tardó y su resumen: el
+    # JSON de `content` es el resultado crudo y no lo incluye.
+    traza = {
+        item.get("tool_call_id"): item
+        for item in result.get("tool_trace", [])
+        if item.get("tool_call_id")
+    }
     for msg in result["messages"][base_len:]:
+        meta = traza.get(msg.get("tool_call_id"), {}) if msg.get("role") == "tool" else {}
         memory.add_message(
             conv_id,
             msg.get("role", "assistant"),
@@ -561,6 +569,9 @@ def _persist_turn_sync(conv_id: str, base_len: int, result: dict) -> str:
             msg.get("tool_calls"),
             msg.get("tool_call_id"),
             msg.get("name"),
+            tool_ok=meta.get("ok"),
+            tool_duration_ms=meta.get("duration_ms"),
+            tool_summary=meta.get("summary"),
         )
         if msg.get("role") == "tool":
             approval_id = _pending_approval_id(msg.get("content"))
@@ -824,7 +835,7 @@ async def get_conversation(conversation_id: str) -> dict:
     exists = await asyncio.to_thread(memory.conversation_exists, conversation_id)
     if not exists:
         raise HTTPException(404, "Conversación no encontrada")
-    messages = await asyncio.to_thread(memory.get_messages, conversation_id, None)
+    messages = await asyncio.to_thread(memory.get_timeline, conversation_id)
     return {"conversation_id": conversation_id, "messages": messages}
 
 

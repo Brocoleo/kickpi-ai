@@ -59,12 +59,17 @@ def add_message(
     tool_calls: list | None = None,
     tool_call_id: str | None = None,
     name: str | None = None,
+    *,
+    tool_ok: bool | None = None,
+    tool_duration_ms: int | None = None,
+    tool_summary: str | None = None,
 ) -> None:
     with session() as conn:
         conn.execute(
             "INSERT INTO messages "
-            "(conversation_id, role, content, tool_calls, tool_call_id, name, created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "(conversation_id, role, content, tool_calls, tool_call_id, name, "
+            " tool_ok, tool_duration_ms, tool_summary, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 conv_id,
                 role,
@@ -72,9 +77,49 @@ def add_message(
                 json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
                 tool_call_id,
                 name,
+                None if tool_ok is None else int(bool(tool_ok)),
+                tool_duration_ms,
+                tool_summary,
                 _now(),
             ),
         )
+
+
+def get_timeline(conv_id: str) -> list[dict]:
+    """Historial para PINTAR, no para el LLM.
+
+    A diferencia de `get_messages`, incluye el `id` y `created_at` de cada
+    fila (la PWA los necesita como clave estable y para fechar el historial)
+    y los metadatos de cada herramienta, para reconstruir el mismo detalle
+    que se vio en vivo por SSE.
+    """
+    query = (
+        "SELECT id, role, content, tool_calls, tool_call_id, name, "
+        "tool_ok, tool_duration_ms, tool_summary, created_at "
+        "FROM messages WHERE conversation_id=? ORDER BY id"
+    )
+    with session() as conn:
+        rows = conn.execute(query, (conv_id,)).fetchall()
+
+    items: list[dict] = []
+    for row in rows:
+        item = {
+            "id": row["id"],
+            "role": row["role"],
+            "content": row["content"],
+            "tool_calls": json.loads(row["tool_calls"]) if row["tool_calls"] else None,
+            "tool_call_id": row["tool_call_id"],
+            "name": row["name"],
+            "created_at": row["created_at"],
+        }
+        if row["tool_ok"] is not None:
+            item["tool_ok"] = bool(row["tool_ok"])
+        if row["tool_duration_ms"] is not None:
+            item["tool_duration_ms"] = row["tool_duration_ms"]
+        if row["tool_summary"]:
+            item["tool_summary"] = row["tool_summary"]
+        items.append(item)
+    return items
 
 
 def get_messages(conv_id: str, limit: int | None = None) -> list[dict]:
