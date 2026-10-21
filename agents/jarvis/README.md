@@ -115,7 +115,7 @@ Un solo comando, con verificación de extremo a extremo:
 cd agents/jarvis
 ./deploy-all.sh --full      # agente + ejecutor + PWA + verificación
 ./deploy-all.sh --agent     # solo el agente
-./deploy-all.sh --executor  # solo el ejecutor (el fix del executor pendiente)
+./deploy-all.sh --executor  # solo el ejecutor
 ./deploy-all.sh --pwa       # solo la PWA (sin sudo)
 ./deploy-all.sh --check     # solo verifica: versión, /health, bundle, /files
 ./deploy-all.sh --test      # tests de agente y PWA, y luego --full
@@ -137,6 +137,39 @@ Desarrollo de la interfaz con recarga en caliente:
 ```bash
 cd pwa && npm run dev
 # Vite hace proxy de /api, /health y /files a http://localhost:8888
+```
+
+## Banco de pruebas
+
+Cuatro capas, de más rápida a más real. Ninguna necesita sudo.
+
+```bash
+# Agente (90): API, proxy /files, memoria, timeline y ramas del grafo
+cd agent && python3 -m pytest
+
+# Ejecutor (105 + 6 omitidas): policy engine, SSH, aprobaciones, auditoría
+cd executor && python3 -m pytest
+
+# PWA (47): componentes y reconstrucción del historial (vitest + jsdom)
+cd pwa && npm run test
+
+# Navegador real (11 + 1 omitida): iPhone 13 sobre Chromium
+cd pwa && npm run test:e2e
+```
+
+El banco E2E **no toca la placa**: simula el backend con interceptación de rutas,
+así que comprueba la interfaz de verdad en segundos y sin contraseñas. Cubre el
+streaming SSE (segmento → herramienta → tokens → cierre), el historial
+restaurado con fechas y actividad agrupada, la exportación a Markdown, el enlace
+`/files/` del mismo origen y el estado por host en Equipos.
+
+El único caso que habla con el servidor real es `e2e/integrado.spec.ts` (login,
+aprobación, ejecución por SSH y auditoría). Se omite salvo que se le den las
+credenciales por entorno — nunca por archivo:
+
+```bash
+JARVIS_E2E_URL=http://127.0.0.1:8889 JARVIS_E2E_PASSWORD=... \
+  npx playwright test e2e/integrado.spec.ts
 ```
 
 ## Autenticación

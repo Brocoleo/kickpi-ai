@@ -724,7 +724,13 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
             }
 
             const message = fila.mensaje;
-            if (message.streaming && !message.content) return null;
+            // Un segmento vacío aún no tiene nada que mostrar… salvo que
+            // lleve actividad de herramientas: entonces sí (es el bloque que
+            // se ve mientras el agente trabaja, antes de escribir la
+            // respuesta).
+            if (message.streaming && !message.content && !message.tools?.length) {
+              return null;
+            }
             const fecha = hora(message.at);
             return (
               <div key={message.id} className={`msg ${message.role}`}>
