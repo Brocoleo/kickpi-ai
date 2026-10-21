@@ -6,6 +6,7 @@ import type { Approval } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   approvals: vi.fn(),
+  executions: vi.fn(),
   approval: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
@@ -64,6 +65,7 @@ function renderTab(props: Partial<React.ComponentProps<typeof Aprobaciones>> = {
 beforeEach(() => {
   vi.clearAllMocks();
   apiMock.approvals.mockResolvedValue({ approvals: [makeApproval()], count: 1 });
+  apiMock.executions.mockResolvedValue({ executions: [], count: 0 });
   apiMock.approve.mockResolvedValue({ approval: makeApproval({ status: "approved" }) });
   apiMock.reject.mockResolvedValue({ approval: makeApproval({ status: "rejected" }) });
   apiMock.execute.mockResolvedValue({
@@ -96,6 +98,47 @@ describe("listado", () => {
   it("informa del numero de pendientes al contenedor", async () => {
     const { onPendingCount } = renderTab();
     await waitFor(() => expect(onPendingCount).toHaveBeenCalledWith(1));
+  });
+
+  it("muestra la actividad reciente del ejecutor", async () => {
+    apiMock.executions.mockResolvedValue({
+      executions: [
+        {
+          id: 7,
+          created_at: new Date(NOW - 70_000).toISOString(),
+          host_id: "macbook",
+          operation: "host_git_diff_stat",
+          params_json: "{}",
+          allowed: 1,
+          ok: 1,
+          exit_code: 0,
+          duration_ms: 42,
+          output_excerpt: null,
+          error: null,
+        },
+        {
+          id: 6,
+          created_at: new Date(NOW - 600_000).toISOString(),
+          host_id: "desktop",
+          operation: "host_disk_usage",
+          params_json: "{}",
+          allowed: 0,
+          ok: 0,
+          exit_code: null,
+          duration_ms: null,
+          output_excerpt: null,
+          error: "operación no permitida",
+        },
+      ],
+      count: 2,
+    });
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("Actividad reciente")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("denegado")).toBeInTheDocument();
+    // Una denegada conserva su motivo: no se confunde con un fallo.
+    expect(screen.getByText("operación no permitida")).toBeInTheDocument();
   });
 
   it("muestra un estado vacio cuando no hay nada", async () => {

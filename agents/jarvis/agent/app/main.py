@@ -49,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 
 @asynccontextmanager
@@ -298,6 +298,25 @@ async def list_equipos() -> dict:
         "executions": history.get("executions") or [],
         "count": len(items),
     }
+
+
+@app.get(
+    "/api/executions", tags=["equipos"], dependencies=[Depends(require_auth)]
+)
+async def list_executions(limit: int = 20) -> dict:
+    """Historial del ejecutor, sin sondear hosts.
+
+    `/api/equipos` sondea cada host para el estado (con caché), y la pestaña
+    de Aprobaciones solo necesita el historial. Separarlo evita que dos
+    pantallas disparen las mismas sondas SSH.
+    """
+    limit = max(1, min(limit, 100))
+    try:
+        history = await call_executor("equipos_historial", {"limit": limit})
+    except ExecutorError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    rows = history.get("executions") or []
+    return {"executions": rows, "count": len(rows)}
 
 
 @app.get("/api/llm/status", tags=["meta"], dependencies=[Depends(require_auth)])

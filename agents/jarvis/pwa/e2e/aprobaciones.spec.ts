@@ -103,6 +103,58 @@ async function mockBackend(page: Page) {
     if (path === "/aprobaciones" && request.method() === "GET") {
       return json({ approvals: [state.approval], count: 1 });
     }
+    if (path === "/equipos" && request.method() === "GET") {
+      return json({
+        hosts: [
+          {
+            id: "kickpi",
+            label: "kickpi",
+            transport: "local",
+            enabled: true,
+            address: null,
+            os: "Debian 13",
+            roots: ["/mnt/data"],
+            online: true,
+          },
+        ],
+        executions: [],
+        count: 1,
+      });
+    }
+    if (path === "/executions" && request.method() === "GET") {
+      // Historial del ejecutor: lo que se ve tras aprobar.
+      return json({
+        executions: [
+          {
+            id: 7,
+            created_at: new Date(Date.now() - 70_000).toISOString(),
+            host_id: "macbook",
+            operation: "host_git_diff_stat",
+            params_json: "{}",
+            allowed: 1,
+            ok: 1,
+            exit_code: 0,
+            duration_ms: 42,
+            output_excerpt: " 1 file changed",
+            error: null,
+          },
+          {
+            id: 6,
+            created_at: new Date(Date.now() - 600_000).toISOString(),
+            host_id: "desktop",
+            operation: "host_disk_usage",
+            params_json: "{}",
+            allowed: 0,
+            ok: 0,
+            exit_code: null,
+            duration_ms: null,
+            output_excerpt: null,
+            error: "operación no permitida para este host",
+          },
+        ],
+        count: 2,
+      });
+    }
     if (path.endsWith("/aprobar")) {
       state.approval = {
         ...state.approval,
@@ -261,5 +313,33 @@ test.describe("pestaña Aprobaciones (390x844)", () => {
     }));
     expect(storage.local).toHaveLength(0);
     expect(storage.session).toHaveLength(0);
+  });
+});
+
+test.describe("actividad reciente en Aprobaciones", () => {
+  test("muestra las ejecuciones y distingue denegadas", async ({ page }) => {
+    await mockBackend(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: /Aprobaciones/ }).click();
+
+    const actividad = page
+      .getByRole("region", { name: /Actividad reciente/ });
+    await expect(actividad).toBeVisible();
+    // La operación aparece también en la solicitud: se mira solo la lista.
+    await expect(actividad.getByText("host_git_diff_stat")).toBeVisible();
+    // Una ejecución denegada no es un fallo del host: se etiqueta aparte.
+    await expect(actividad.getByText("denegado")).toBeVisible();
+    await expect(actividad.getByText("hace 1 min")).toBeVisible();
+  });
+
+  test("Equipos ya no repite la actividad: solo hosts", async ({ page }) => {
+    await mockBackend(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: /Equipos/ }).click();
+
+    // El nombre y el id del host coinciden: basta con que haya tarjeta.
+    await expect(page.getByText("kickpi").first()).toBeVisible();
+    await expect(page.getByText("Actividad reciente")).toHaveCount(0);
+    await expect(page.getByText("Recursos del servidor")).toBeVisible();
   });
 });

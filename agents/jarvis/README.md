@@ -174,7 +174,8 @@ El banco E2E **no toca la placa**: simula el backend con interceptación de ruta
 así que comprueba la interfaz de verdad en segundos y sin contraseñas. Cubre el
 streaming SSE (segmento → herramienta → tokens → cierre), el historial
 restaurado con fechas y actividad agrupada, la exportación a Markdown, el enlace
-`/files/` del mismo origen y el estado por host en Equipos.
+`/files/` del mismo origen, el estado por host en Equipos y la actividad
+reciente en Aprobaciones.
 
 El único caso que habla con el servidor real es `e2e/integrado.spec.ts` (login,
 aprobación, ejecución por SSH y auditoría). Se omite salvo que se le den las
@@ -260,12 +261,15 @@ Seis secciones: **Chat**, **Métricas**, **Equipos**, **Archivos**,
 - Chat con memoria persistente, chips de herramientas y modelo usado.
 - Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
   contenedores; refresco cada 10 s.
-- Equipos muestra el estado de los equipos remotos y la actividad auditada.
+- Equipos muestra el estado de los equipos remotos (y solo eso).
 - Archivos enlaza a FileBrowser y Portainer (cada uno con su propio login).
 - **Aprobaciones**: consulta, aprueba y rechaza las solicitudes que Jarvis
   necesita (ver *Fase C*). Refresco cada 10 s y al volver a enfocar;
   confirmación en dos pasos; cuenta atrás por solicitud; historial con
   estado, `exit code` y duración. Badge con el número de pendientes.
+  Incluye la **actividad reciente** del ejecutor: lo aprobado se convierte
+  en una ejecución con su resultado, denegación o error, en la misma
+  pantalla (la consecuencia de lo que apruebas).
 - Ajustes muestra la cadena de modelos, el circuit breaker y cierra sesión.
 - Instalación: Safari → Compartir → **Añadir a pantalla de inicio**.
 - Service worker: precachea solo los assets; **la API nunca se cachea**.
@@ -350,7 +354,8 @@ o **token de API**.
 | POST | `/api/tools/{name}` | Invoca una herramienta (widgets) |
 | GET | `/api/llm/status` | Cadena de modelos y circuit breaker |
 | GET | `/api/audit` | Auditoría de llamadas a herramientas |
-| GET | `/api/equipos` | Equipos registrados y actividad |
+| GET | `/api/equipos` | Equipos registrados con su estado |
+| GET | `/api/executions` | Actividad del ejecutor (sin sondear hosts) |
 | * | `/files/*` | Proxy same-origin a FileBrowser (ver más abajo) |
 
 El proxy `/files/*` reenvía a `filebrowser:8080/files/*` conservando el prefijo

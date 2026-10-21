@@ -2,31 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { RefreshIcon } from "./icons";
 import { Metrics } from "./Metrics";
-import type { Ejecucion, Equipo } from "../types";
-
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (seconds < 60) return `hace ${seconds}s`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `hace ${minutes} min`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `hace ${hours} h`;
-  return `hace ${Math.round(hours / 24)} d`;
-}
+import type { Equipo } from "../types";
 
 function hostState(host: Equipo): { label: string; cls: string } {
   if (!host.enabled) return { label: "deshabilitado", cls: "off" };
   if (host.online === true) return { label: "en línea", cls: "ok" };
   if (host.online === false) return { label: "sin conexión", cls: "warn" };
   return { label: "consultando", cls: "off" };
-}
-
-function executionState(item: Ejecucion): { label: string; cls: string } {
-  if (!item.allowed) return { label: "denegado", cls: "warn" };
-  if (item.ok) return { label: "ok", cls: "ok" };
-  return { label: `error ${item.exit_code ?? "?"}`, cls: "warn" };
 }
 
 function HostCard({ host }: { host: Equipo }) {
@@ -61,7 +43,6 @@ function HostCard({ host }: { host: Equipo }) {
 
 export function Equipos({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [hosts, setHosts] = useState<Equipo[]>([]);
-  const [executions, setExecutions] = useState<Ejecucion[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -70,7 +51,6 @@ export function Equipos({ onUnauthorized }: { onUnauthorized: () => void }) {
     try {
       const result = await api.equipos();
       setHosts(result.hosts ?? []);
-      setExecutions(result.executions ?? []);
       setError(null);
     } catch (err) {
       setError(
@@ -109,39 +89,6 @@ export function Equipos({ onUnauthorized }: { onUnauthorized: () => void }) {
       {hosts.map((host) => (
         <HostCard key={host.id} host={host} />
       ))}
-
-      <div className="card">
-        <div className="card-head">
-          <h2>Actividad reciente</h2>
-          <span className="muted">{executions.length}</span>
-        </div>
-        {executions.length === 0 ? (
-          <p className="muted">Sin ejecuciones registradas todavía.</p>
-        ) : (
-          <ul className="exec-list">
-            {executions.map((item) => {
-              const state = executionState(item);
-              return (
-                <li key={item.id} className="exec-item">
-                  <span className={`exec-dot ${state.cls}`} aria-hidden="true" />
-                  <div className="exec-body">
-                    <div className="exec-title">
-                      <span className="exec-op">{item.operation}</span>
-                      <span className="exec-host">{item.host_id}</span>
-                      <span className="exec-state">{state.label}</span>
-                    </div>
-                    {item.error && <div className="exec-error">{item.error}</div>}
-                    {item.output_excerpt && !item.error && (
-                      <pre className="exec-out">{item.output_excerpt.slice(0, 400)}</pre>
-                    )}
-                  </div>
-                  <span className="exec-time">{relativeTime(item.created_at)}</span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
 
       <section className="equipos-metrics" aria-label="Recursos del servidor">
         <h2 className="section-title">Recursos del servidor</h2>

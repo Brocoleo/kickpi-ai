@@ -118,3 +118,34 @@ def test_llm_tool_specs_do_not_mention_approvals_endpoints():
     assert not any("aprob" in name for name in names)
     for spec in TOOL_SPECS:
         assert "/approvals" not in str(spec)
+
+
+def test_executions_endpoint_no_sondea_hosts(client, monkeypatch):
+    """Historial para Aprobaciones: una sola llamada, sin sondas por host."""
+    import app.main as main_module
+
+    llamadas: list[str] = []
+
+    async def fake_call(name, arguments=None):
+        llamadas.append(name)
+        return {
+            "executions": [
+                {
+                    "id": 1,
+                    "created_at": "2026-10-21T10:00:00+00:00",
+                    "host_id": "macbook",
+                    "operation": "host_git_diff_stat",
+                    "allowed": 1,
+                    "ok": 1,
+                    "duration_ms": 42,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(main_module, "call_executor", fake_call)
+    resp = client.get(
+        "/api/executions?limit=5", headers={"X-API-Token": API_TOKEN}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 1
+    assert llamadas == ["equipos_historial"]

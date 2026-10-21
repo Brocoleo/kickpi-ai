@@ -5,6 +5,7 @@ import type {
   ChatResponse,
   Containers,
   Disks,
+  Ejecucion,
   Equipos,
   Health,
   LlmStatus,
@@ -211,6 +212,10 @@ export const api = {
   llmStatus: () => request<LlmStatus>("/llm/status"),
 
   equipos: () => request<Equipos>("/equipos"),
+
+  /** Historial del ejecutor (sin sondear hosts). */
+  executions: (limit = 20) =>
+    request<{ executions: Ejecucion[]; count: number }>(`/executions?limit=${limit}`),
 
   /* --- Aprobaciones humanas (Fase C) --------------------------------------
    * Superficie separada de las herramientas del LLM: el backend exige

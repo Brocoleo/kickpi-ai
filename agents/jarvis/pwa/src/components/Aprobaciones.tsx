@@ -29,9 +29,10 @@ import {
   statusMeta,
   truncateOutput,
 } from "../lib/approvals";
-import type { Approval } from "../types";
+import type { Approval, Ejecucion } from "../types";
 import { ApprovalDialog, type ConfirmKind } from "./ApprovalDialog";
 import { CheckIcon, ChevronIcon, RefreshIcon, ShieldCheckIcon, XIcon } from "./icons";
+import { RecentActivity } from "./RecentActivity";
 
 type Props = {
   /** Token CSRF ligado a la sesion (solo en memoria). */
@@ -249,6 +250,8 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
     kind: ConfirmKind;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  // Consecuencia de lo aprobado: qué se ejecutó y cómo salió.
+  const [executions, setExecutions] = useState<Ejecucion[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [result, setResult] = useState<ActionResult | null>(null);
   // Aviso corto para lectores de pantalla (no duplica el detalle de la
@@ -264,8 +267,15 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const data = await api.approvals(undefined, 100);
+        // El historial es una consulta local barata (no sondea hosts) y se
+        // refresca con el mismo latido que las solicitudes: tras aprobar,
+        // la actividad aparece sin salir de la pantalla.
+        const [data, historial] = await Promise.all([
+          api.approvals(undefined, 100),
+          api.executions(20).catch(() => null),
+        ]);
         const items = data.approvals ?? [];
+        if (historial) setExecutions(historial.executions ?? []);
         setApprovals(items);
         // El badge de la pestaña se alimenta desde aqui cuando esta abierta.
         onPendingCount?.(items.filter((a) => a.status === "pending").length);
@@ -570,6 +580,8 @@ export function Aprobaciones({ csrfToken, onUnauthorized, onPendingCount }: Prop
           </div>
         </section>
       )}
+
+      <RecentActivity items={executions} />
 
       {confirm && (
         <ApprovalDialog
