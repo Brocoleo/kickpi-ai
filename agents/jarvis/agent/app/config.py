@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # las herramientas del LLM.
     approvals_token: str = ""
 
+    # --- Proxy de FileBrowser (mismo origen que la PWA) ---
+    # FileBrowser se sirve con baseURL /files, así que el proxy conserva ese
+    # prefijo: la cookie de sesión (Path=/files) viaja sin reescrituras.
+    # Vacío = proxy desactivado.
+    filebrowser_url: str = "http://filebrowser:8080"
+    # Segundos de espera para subidas/descargas grandes a través del proxy.
+    filebrowser_timeout: float = 300.0
+
     # --- Persistencia y límites ---
     data_dir: str = "/data"
     history_limit: int = 20

@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import approvals, audit, policy
 from .config import get_settings
 from .registry import Host, load_registry
-from .runner import run, _run_ssh_probe, _run_local
+from .runner import run, RunResult, _run_ssh_probe, _run_local
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-executor")
@@ -167,6 +167,18 @@ def list_hosts() -> dict:
     return {"hosts": items, "count": len(items)}
 
 
+def _estado_desde_sonda(run_result: RunResult, started: float) -> dict:
+    """Traduce el resultado de una sonda (local o SSH) al estado del host."""
+    if run_result.error:
+        return {"online": False, "reason": run_result.error}
+    return {
+        "online": True,
+        "reason": "ok",
+        "kernel": run_result.stdout.strip(),
+        "latency_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
 async def _probe(host: Host) -> dict:
     """Comprueba si el host responde. Cache corta."""
     now = time.monotonic()
@@ -174,27 +186,22 @@ async def _probe(host: Host) -> dict:
     if cached and now - cached[0] < _STATUS_TTL:
         return cached[1]
 
-    settings = get_settings()
     started = time.monotonic()
     if not host.enabled:
         result = {"online": False, "reason": "host deshabilitado"}
     elif host.transport == "local":
-        # Host local: uname directo, sin SSH
-        run_result = await _run_local(["uname", "-sr"], PROBE_TIMEOUT)
+        # Host local: uname directo, sin SSH.
+        result = _estado_desde_sonda(
+            await _run_local(["uname", "-sr"], PROBE_TIMEOUT), started
+        )
     elif host.transport == "ssh" and not host.address:
         result = {"online": False, "reason": "sin direccion configurada"}
     else:
-        # Health-check agresivo: 3 s totales, sin reintentos de conexión
-        run_result = await _run_ssh_probe(host, ["uname", "-sr"], PROBE_TIMEOUT)
-        if run_result.error:
-            result = {"online": False, "reason": run_result.error}
-        else:
-            result = {
-                "online": True,
-                "reason": "ok",
-                "kernel": run_result.stdout.strip(),
-                "latency_ms": int((time.monotonic() - started) * 1000),
-            }
+        # Health-check agresivo: 3 s totales, sin reintentos de conexión.
+        result = _estado_desde_sonda(
+            await _run_ssh_probe(host, ["uname", "-sr"], PROBE_TIMEOUT), started
+        )
+
     _STATUS_CACHE[host.id] = (now, result)
     return result
 

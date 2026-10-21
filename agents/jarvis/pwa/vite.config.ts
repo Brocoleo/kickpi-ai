@@ -41,8 +41,14 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
         navigateFallback: "/index.html",
-        // La API y la salud NUNCA se sirven desde caché.
-        navigateFallbackDenylist: [/^\/api\//, /^\/health$/],
+        // La API, la salud y el proxy de FileBrowser NUNCA se sirven desde
+        // caché. Sin /files aquí, el service worker devolvería el shell de
+        // Jarvis en /files/ y el proxy ni siquiera se consultaría.
+        navigateFallbackDenylist: [
+          /^\/api\//,
+          /^\/health$/,
+          /^\/files(\/|$)/,
+        ],
         runtimeCaching: [],
       },
     }),
@@ -51,6 +57,8 @@ export default defineConfig({
     proxy: {
       "/api": "http://localhost:8888",
       "/health": "http://localhost:8888",
+      // Mismo proxy que en el agente: FileBrowser vive en /files.
+      "/files": "http://localhost:8888",
     },
   },
   build: {

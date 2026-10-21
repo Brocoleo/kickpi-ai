@@ -19,6 +19,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 from . import approvals_client, memory, sessions
 from .approvals_client import ApprovalsError
@@ -48,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 
 @asynccontextmanager
@@ -78,14 +79,18 @@ async def headers_middleware(request: Request, call_next):
     response.headers.setdefault(
         "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
     )
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-        "connect-src 'self'; font-src 'self'; manifest-src 'self'; "
-        "worker-src 'self' blob:; frame-ancestors 'none'; "
-        "base-uri 'self'; form-action 'self'",
-    )
+    # El proxy de FileBrowser trae su propio HTML/JS (Vue compilado con
+    # scripts inline). Le imponemos la CSP estricta de Jarvis solo si no
+    # trae la suya, para no romper su interfaz.
+    if not request.url.path.startswith("/files"):
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "connect-src 'self'; font-src 'self'; manifest-src 'self'; "
+            "worker-src 'self' blob:; frame-ancestors 'none'; "
+            "base-uri 'self'; form-action 'self'",
+        )
     if request.url.path.startswith("/api/") or request.url.path == "/health":
         response.headers["Cache-Control"] = "no-store"
     else:
@@ -828,6 +833,149 @@ async def audit(limit: int = 50) -> dict:
     limit = max(1, min(limit, 200))
     items = await asyncio.to_thread(memory.list_audit, limit)
     return {"audit": items, "count": len(items)}
+
+
+# --------------------------------------------------------------------------- #
+# Proxy de FileBrowser (mismo origen que la PWA)
+# --------------------------------------------------------------------------- #
+# FileBrowser vive en su propio contenedor con baseURL "/files". En vez de
+# exponer otro puerto (otro origen, otra sesión, otro login a la vista del
+# usuario), el agente reenvía /files/* tal cual. Como el prefijo no cambia,
+# la cookie "auth" de FileBrowser (Path=/files) y sus rutas relativas siguen
+# funcionando sin reescrituras.
+_PROXY_DROP_REQUEST = {
+    "host",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+# Las mismas cabeceras hop-by-hop valen para la respuesta. "Content-Length"
+# y "Content-Encoding" SÍ se conservan: el cuerpo se reenvía en crudo
+# (aiter_raw), así que la longitud y la compresión siguen siendo válidas y
+# el navegador puede mostrar progreso en las descargas.
+_PROXY_DROP_RESPONSE = _PROXY_DROP_REQUEST
+
+
+def _forward_headers(request: Request, session_cookie: str) -> dict[str, str]:
+    """Cabeceras del navegador listas para el contenedor.
+
+    Se quitan las hop-by-hop y, además, la cookie de sesión de Jarvis: el
+    contenedor de FileBrowser no tiene por qué verla. La cookie propia de
+    FileBrowser ("auth") sí viaja.
+    """
+    headers: dict[str, str] = {}
+    for key, value in request.headers.items():
+        lower = key.lower()
+        if lower in _PROXY_DROP_REQUEST:
+            continue
+        if lower == "cookie":
+            pairs = [
+                part.strip()
+                for part in value.split(";")
+                if part.strip() and not part.strip().startswith(f"{session_cookie}=")
+            ]
+            if pairs:
+                headers[key] = "; ".join(pairs)
+            continue
+        headers[key] = value
+    return headers
+
+
+async def _files_proxy(request: Request, rest: str = "") -> Response:
+    settings = get_settings()
+    base = (settings.filebrowser_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(503, "El proxy de FileBrowser está desactivado")
+
+    # Se conserva el sufijo EXACTO que pidió el navegador (incluida la barra
+    # final): FileBrowser responde 307 a "/files" pero 200 a "/files/", así
+    # que normalizar aquí crearía un bucle de redirecciones. Se usa la ruta
+    # cruda del ASGI para no perder caracteres escapados.
+    raw = request.scope.get("raw_path")
+    if raw:
+        ruta = raw.decode("latin-1")
+    else:
+        ruta = "/files" + (f"/{rest}" if rest else "")
+
+    sufijo = ruta[len("/files") :] if ruta.startswith("/files") else ""
+    url = f"{base}/files{sufijo}"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+
+    headers = _forward_headers(request, settings.cookie_name)
+
+    timeout = httpx.Timeout(
+        connect=5.0,
+        read=settings.filebrowser_timeout,
+        write=settings.filebrowser_timeout,
+        pool=5.0,
+    )
+    client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    upstream_request = client.build_request(
+        request.method, url, headers=headers, content=request.stream()
+    )
+
+    try:
+        upstream = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        log.warning("FileBrowser inaccesible (%s): %s", url, exc)
+        raise HTTPException(502, "FileBrowser no responde") from exc
+
+    # httpx entrega las cabeceras en minúsculas. Se reenvían tal cual salvo
+    # las hop-by-hop; "set-cookie" se trata aparte porque puede haber varias.
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in _PROXY_DROP_RESPONSE and key.lower() != "set-cookie"
+    }
+    location = response_headers.get("location")
+    if location and location.startswith(base):
+        response_headers["location"] = location[len(base) :] or "/files/"
+
+    cookies = upstream.headers.get_list("set-cookie")
+
+    async def cleanup() -> None:
+        await upstream.aclose()
+        await client.aclose()
+
+    response = StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        headers=response_headers,
+        background=BackgroundTask(cleanup),
+    )
+    for cookie in cookies:
+        response.raw_headers.append((b"set-cookie", cookie.encode("latin-1")))
+    return response
+
+
+_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+@app.api_route(
+    "/files",
+    methods=_PROXY_METHODS,
+    include_in_schema=False,
+    dependencies=[Depends(require_auth)],
+)
+async def files_root(request: Request) -> Response:
+    return await _files_proxy(request)
+
+
+@app.api_route(
+    "/files/{rest:path}",
+    methods=_PROXY_METHODS,
+    include_in_schema=False,
+    dependencies=[Depends(require_auth)],
+)
+async def files_any(request: Request, rest: str) -> Response:
+    return await _files_proxy(request, rest)
 
 
 # --------------------------------------------------------------------------- #

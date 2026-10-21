@@ -50,11 +50,16 @@ el servidor. Inferencia en la nube (OpenRouter / cualquier API compatible).
 | `jarvis-tools` | 8000 | interna en la red `jarvis` (no publicada) |
 | `docker-socket-proxy` | 2375 | interna en la red `dsp` (no publicada, sin salida a internet) |
 | `portainer` | 9443 | `127.0.0.1:9443` -> Tailscale Serve HTTPS |
-| `filebrowser` | 8080 | `127.0.0.1:8080` -> Tailscale Serve HTTPS |
+| `filebrowser` | 8080 | `127.0.0.1:8080` -> Tailscale Serve HTTPS **y** proxy same-origin en `/files/` |
 
 > Tailscale Serve proxya al **loopback del host**: los puertos deben estar
 > publicados con `ports: "127.0.0.1:<p>:<p>"`. `expose:` solo documenta y no
 > basta (produce 502).
+>
+> **FileBrowser también vive en `/files/`** (proxy del agente, mismo origen que
+> la PWA): mismo TLS, misma sesión y sin segundo puerto. El puerto 8080 sigue
+> existiendo para acceso directo. Portainer **no** admite subrutas, así que
+> conserva su puerto propio.
 
 ## Almacenamiento y montaje
 
@@ -102,11 +107,36 @@ sudo tailscale serve --bg --https=8888 http://localhost:8888
 
 URL de la PWA: `https://kickpi-jarvis.tail1e3b4d.ts.net:8888/`
 
+## Despliegue y actualización
+
+Un solo comando, con verificación de extremo a extremo:
+
+```bash
+cd agents/jarvis
+./deploy-all.sh --full      # agente + ejecutor + PWA + verificación
+./deploy-all.sh --agent     # solo el agente
+./deploy-all.sh --executor  # solo el ejecutor (el fix del executor pendiente)
+./deploy-all.sh --pwa       # solo la PWA (sin sudo)
+./deploy-all.sh --check     # solo verifica: versión, /health, bundle, /files
+./deploy-all.sh --test      # tests de agente y PWA, y luego --full
+```
+
+**Sudo: se pide una sola vez.** Cada `ssh` abre una sesión distinta y el ticket
+de sudo no se comparte entre sesiones, así que todo lo que necesita sudo viaja
+en **un único `ssh -t`** (comando como *argumento*, nunca por stdin: si se
+ocupa stdin, ssh no puede darte la terminal para escribir la contraseña). Por
+eso `deploy-all.sh` **debe ejecutarse desde tu terminal**, no por un pipe.
+
+El script no dice "desplegado" sin comprobarlo: `jarvis-agent` debe reportar en
+`/health` la versión y el bundle recién compilado, y el proxy `/files/` debe
+responder 200. También `pwa/deploy.sh` (build + publicación en dos fases +
+`--watch`) sigue disponible para solo la interfaz.
+
 Desarrollo de la interfaz con recarga en caliente:
 
 ```bash
 cd pwa && npm run dev
-# Vite hace proxy de /api y /health a http://localhost:8888
+# Vite hace proxy de /api, /health y /files a http://localhost:8888
 ```
 
 ## Autenticación
@@ -221,6 +251,7 @@ o **token de API**.
 | POST | `/api/auth/logout` | Invalida la sesión |
 | GET | `/api/auth/me` | Estado de autenticación (+ token CSRF si hay sesión) |
 | POST | `/api/chat` | `{"message": "...", "conversation_id": "..."}` |
+| POST | `/api/chat/stream` | Igual, pero responde **SSE** (`segment`, `token`, `tool`, `done`) |
 | GET | `/api/conversations` | Lista de conversaciones |
 | GET | `/api/conversations/{id}` | Mensajes de una conversación |
 | GET | `/api/tools` | Herramientas permitidas |
@@ -228,6 +259,13 @@ o **token de API**.
 | GET | `/api/llm/status` | Cadena de modelos y circuit breaker |
 | GET | `/api/audit` | Auditoría de llamadas a herramientas |
 | GET | `/api/equipos` | Equipos registrados y actividad |
+| * | `/files/*` | Proxy same-origin a FileBrowser (ver más abajo) |
+
+El proxy `/files/*` reenvía a `filebrowser:8080/files/*` conservando el prefijo
+(la cookie de FileBrowser tiene `Path=/files`) y sin reescribir rutas. No
+propaga cabeceras hop-by-hop ni la cookie de sesión de Jarvis, y deja pasar
+todas las `Set-Cookie` de FileBrowser. Exige la misma autenticación que el
+resto de la API.
 
 Rutas de aprobación (Fase C). Exigen **sesión de navegador** (el token de API
 no basta) y, si cambian estado, además `Origin` estricto y `X-CSRF-Token`:

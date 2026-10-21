@@ -111,7 +111,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.4
+    image: jarvis-agent:0.5
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:
@@ -124,6 +124,8 @@ services:
       JARVIS_EXECUTOR_TOKEN: ${JARVIS_EXECUTOR_TOKEN:?define JARVIS_EXECUTOR_TOKEN en .env}
       JARVIS_APPROVALS_TOKEN: ${JARVIS_APPROVALS_TOKEN:?define JARVIS_APPROVALS_TOKEN en .env}
       JARVIS_EXECUTOR_URL: http://jarvis-executor:8000
+      # Proxy same-origin de FileBrowser: /files/* → contenedor filebrowser.
+      JARVIS_FILEBROWSER_URL: http://filebrowser:8080
       JARVIS_LLM_BASE_URL: ${JARVIS_LLM_BASE_URL:-https://openrouter.ai/api/v1}
       JARVIS_LLM_API_KEY: ${JARVIS_LLM_API_KEY:-}
       JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
