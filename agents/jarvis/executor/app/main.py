@@ -27,7 +27,7 @@ log = logging.getLogger("jarvis-executor")
 
 app = FastAPI(
     title="Jarvis Executor",
-    version="0.3.0",
+    version="0.4.0",
     description="Ejecucion remota multi-host con Policy Engine (solo catalogo autorizado).",
 )
 
@@ -89,7 +89,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "service": "jarvis-executor",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "hosts": len(registry.hosts),
         "operations": len(registry.operations),
         "projects": len(registry.projects),

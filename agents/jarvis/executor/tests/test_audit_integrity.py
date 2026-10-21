@@ -102,3 +102,36 @@ def _decision():
         resolved_path="/tmp",
         timeout=5,
     )
+
+
+def test_migration_from_old_schema_without_column(isolated):
+    """Una BD creada antes de `approval_id` migra sin romper lecturas.
+
+    Regresión real: el índice de la columna nueva estaba en SCHEMA y
+    `CREATE INDEX` fallaba antes del `ALTER TABLE` (500 en /executions).
+    """
+    old_schema = """
+    CREATE TABLE executions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL, host_id TEXT NOT NULL, operation TEXT NOT NULL,
+        params_json TEXT, allowed INTEGER NOT NULL, ok INTEGER NOT NULL,
+        exit_code INTEGER, duration_ms INTEGER, output_excerpt TEXT, error TEXT
+    );
+    """
+    conn = sqlite3.connect(isolated.audit_db)
+    conn.executescript(old_schema)
+    conn.execute(
+        "INSERT INTO executions(created_at, host_id, operation, allowed, ok) "
+        "VALUES ('2026-01-01T00:00:00+00:00','h','op',1,1)"
+    )
+    conn.commit()
+    conn.close()
+
+    # Lectura: debe migrar y no lanzar.
+    rows = audit.recent(limit=5)
+    assert len(rows) == 1
+    assert rows[0]["approval_id"] is None
+
+    # Escritura posterior con la columna nueva.
+    audit.record("h", "op2", {"a": 1}, allowed=True, ok=True, approval_id="AP-9")
+    assert audit.recent(limit=1)[0]["approval_id"] == "AP-9"

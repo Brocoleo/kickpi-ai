@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS executions (
 
 CREATE INDEX IF NOT EXISTS idx_exec_created ON executions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_exec_host ON executions(host_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_exec_approval ON executions(approval_id);
 """
 
 #: Los parametros se guardan completos. Si algún día superan este tamaño se
@@ -40,14 +39,16 @@ _MAX_PARAMS_JSON = 20_000
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    # OJO: ningún índice puede referenciar `approval_id` en SCHEMA. En una
+    # base creada antes de la columna, `CREATE INDEX` fallaría ANTES del
+    # ALTER TABLE y dejaría el servicio devolviendo 500.
     conn.executescript(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(executions)")}
-    # Migracion de bases creadas antes de la columna approval_id.
     if "approval_id" not in columns:
         conn.execute("ALTER TABLE executions ADD COLUMN approval_id TEXT")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_exec_approval ON executions(approval_id)"
-        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exec_approval ON executions(approval_id)"
+    )
 
 
 def _connect() -> sqlite3.Connection:

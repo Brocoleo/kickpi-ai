@@ -125,16 +125,34 @@ async def test_ssh_host_disconnected():
     assert elapsed < 30, "no debe tardar tanto en fallar"
 
 
-async def test_ssh_missing_known_hosts_denied():
-    """Sin known_hosts no se conecta nunca (nunca TOFU)."""
-    host = ssh_host(known_hosts="/tmp/no-existe-known-hosts")
+async def test_ssh_missing_known_hosts_denied(tmp_path):
+    """Sin known_hosts no se conecta nunca (nunca TOFU).
+
+    Se fijan dirección y clave EXISTENTES para que el rechazo ocurra por el
+    control correcto (known_hosts) y no por un control anterior: la prueba es
+    determinista y no depende del entorno de autoprueba SSH.
+    """
+    key = tmp_path / "clave-dummy"
+    key.write_text("dummy")
+    host = ssh_host(
+        address="192.0.2.10",
+        identity_file=str(key),
+        known_hosts="/tmp/no-existe-known-hosts",
+    )
     result = await run(host, ["echo", "nunca"])
     assert not result.ok
     assert "known_hosts" in (result.error or "")
 
 
-async def test_ssh_missing_identity_denied():
-    host = ssh_host(identity_file="/tmp/no-existe-clave")
+async def test_ssh_missing_identity_denied(tmp_path):
+    """Sin clave privada el ejecutor rechaza antes de abrir conexión."""
+    known = tmp_path / "known_hosts-dummy"
+    known.write_text("")
+    host = ssh_host(
+        address="192.0.2.10",
+        identity_file="/tmp/no-existe-clave",
+        known_hosts=str(known),
+    )
     result = await run(host, ["echo", "nunca"])
     assert not result.ok
     assert "clave" in (result.error or "")
