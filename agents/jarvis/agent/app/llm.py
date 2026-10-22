@@ -77,6 +77,7 @@ class CircuitBreaker:
         self._failures: dict[str, int] = {}
         self._open_until: dict[str, float] = {}
         self._last_error: dict[str, str] = {}
+        self._last_failure_s: dict[str, float] = {}
 
     def is_open(self, model: str) -> bool:
         until = self._open_until.get(model)
@@ -93,12 +94,14 @@ class CircuitBreaker:
         self._failures.pop(model, None)
         self._open_until.pop(model, None)
         self._last_error.pop(model, None)
+        self._last_failure_s.pop(model, None)
 
     def record_failure(self, model: str, error: str) -> None:
         settings = get_settings()
         count = self._failures.get(model, 0) + 1
         self._failures[model] = count
         self._last_error[model] = error[:200]
+        self._last_failure_s[model] = time.monotonic()
         if count >= settings.llm_circuit_threshold:
             self._open_until[model] = time.monotonic() + settings.llm_circuit_cooldown
             log.warning(
@@ -109,16 +112,27 @@ class CircuitBreaker:
             )
 
     def snapshot(self) -> dict:
+        """Estado por modelo: también los que fallaron sin llegar a abrirse.
+
+        Incluir a los que solo fallaron una vez es lo que convierte /api/llm/
+        status en un diagnóstico: si no aparecieran, un rechazo del proveedor
+        (por ejemplo, cuota agotada) parecería «nada ha pasado».
+        """
         now = time.monotonic()
-        return {
-            model: {
+        datos: dict[str, dict] = {}
+        for model in sorted(set(self._failures) | set(self._open_until)):
+            until = self._open_until.get(model, 0.0)
+            ultimo = self._last_failure_s.get(model)
+            datos[model] = {
                 "open": until > now,
                 "reopens_in_s": round(max(0.0, until - now), 1),
                 "failures": self._failures.get(model, 0),
                 "last_error": self._last_error.get(model),
+                "last_failure_ago_s": (
+                    round(now - ultimo, 1) if ultimo is not None else None
+                ),
             }
-            for model, until in self._open_until.items()
-        }
+        return datos
 
 
 CIRCUIT = CircuitBreaker()
