@@ -17,6 +17,7 @@
 #   ./deploy-all.sh --executor    solo el ejecutor
 #   ./deploy-all.sh --pwa         solo la PWA (no necesita sudo)
 #   ./deploy-all.sh --tools       solo jarvis-tools (índice NAS, lecturas)
+#   ./deploy-all.sh --filebrowser solo FileBrowser (config + tema, reinicio)
 #   ./deploy-all.sh --check       solo verifica, sin tocar nada (no usa sudo)
 #   ./deploy-all.sh --test        tests del agente + PWA y luego --full
 #
@@ -97,7 +98,7 @@ sincronizar_codigo() {
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/agent/tests/" "$BOARD:$REMOTE_DIR/agent/tests/"
   # El requirements del agente define lo que se instala en la imagen:
-  # sin sincronizarlo, Docker reutiliza la capa vieja y el агente arranca
+  # sin sincronizarlo, Docker reutiliza la capa vieja y el agente arranca
   # sin dependencias nuevas (pasa con python-multipart el 2026-10-22).
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/agent/requirements.txt" "$HERE/agent/Dockerfile" \
@@ -113,6 +114,12 @@ sincronizar_codigo() {
     "$HERE/deploy/remote/" "$BOARD:$REMOTE_DIR/deploy/remote/"
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/docker-compose.yml" "$BOARD:$REMOTE_DIR/docker-compose.yml"
+  # FileBrowser guarda su config y su tema en el disco de datos (no en el
+  # repo), pero el repo manda: se sincronizan en cada despliegue para que el
+  # "solo lectura + sin login + tema Jarvis" no se pierda al reinstalar.
+  rsync -az -e "$RSYNC_SSH" \
+    "$HERE/deploy/filebrowser/config.yaml" "$HERE/deploy/filebrowser/jarvis.css" \
+    "$BOARD:/mnt/data/docker/filebrowser/data/"
   verde "✔ código sincronizado"
 }
 
@@ -235,6 +242,12 @@ case "${1:-}" in
     reconstruir_herramientas
     verificar && verde "✔ herramientas desplegadas y verificadas"
     ;;
+  --filebrowser)
+    previa_disco
+    sincronizar_codigo
+    reconstruir "archivos" "actualizando FileBrowser (config + tema)"
+    verificar && verde "✔ FileBrowser actualizado y verificado"
+    ;;
   --executor)
     previa_disco
     sincronizar_codigo
@@ -258,7 +271,7 @@ case "${1:-}" in
     ;;
   *)
     rojo "opción desconocida: $1"
-    echo "uso: $0 [--full|--agent|--executor|--pwa|--check|--test]"
+    echo "uso: $0 [--full|--agent|--executor|--pwa|--tools|--filebrowser|--check|--test]"
     exit 2
     ;;
 esac

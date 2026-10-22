@@ -188,7 +188,10 @@ services:
       FILEBROWSER_DATABASE: /home/filebrowser/data/database.db
     volumes:
       - /mnt/data/docker/filebrowser/data:/home/filebrowser/data
-      - /mnt/data/nas/files:/srv
+      # Solo lectura por diseño: el NAS se consulta desde aquí, pero escribe
+      # únicamente el agente (adjuntos del chat → Entrada). Aunque alguien
+      # cambie la config de FileBrowser, el kernel no le deja modificar nada.
+      - /mnt/data/nas/files:/srv:ro
     # Tailscale Serve proxya a http://127.0.0.1:8080 en el HOST.
     ports:
       - "127.0.0.1:8080:8080"

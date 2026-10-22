@@ -5,12 +5,17 @@
 # Canal v1: mantiene la base de datos BoltDB, por lo que la migracion desde
 # el FileBrowser original es sin perdida de usuarios ni contrasena.
 #
-# Este archivo parte del config por defecto de la imagen (esquema validado)
-# con tres cambios:
+# Decisiones de esta configuracion:
 #   1. port 80 -> 8080   (el contenedor corre como uid 1000; Tailscale Serve
 #                        ya apunta a http://localhost:8080)
 #   2. baseURL -> /files (equivalente al FB_BASEURL del contenedor anterior)
-#   3. sources[0] con name y config.defaultEnabled
+#   3. noauth: true      (se entra sin login; solo alcanzable desde el tailnet)
+#   4. readOnly: true    (el NAS se mira, no se toca; ademas el compose monta
+#                        /mnt/data/nas/files como :ro, doble candado)
+#   5. frontend          (marca Jarvis y tema oscuro a juego con el PWA)
+#
+# Las subidas NO se hacen por aqui: el agente Jarvis es el unico que escribe,
+# via el clip del chat, en /mnt/data/nas/files/Entrada.
 #
 # La ruta de la BD no se fija aqui: la imagen usa FILEBROWSER_DATABASE, que
 # apunta al directorio montado /home/filebrowser/data.
@@ -23,19 +28,55 @@ server:
     - levels: "info|warning|error"
   sources:
     - path: "/srv"
-      name: "Files"
+      name: "NAS"
       config:
         defaultEnabled: true
+        # Solo lectura: la UI, WebDAV y la API no pueden modificar nada.
+        readOnly: true
 auth:
   methods:
+    # Sin login: todas las peticiones usan el usuario 1 (admin). El permiso de
+    # escritura no depende de esto, lo corta `readOnly` + el montaje :ro.
+    noauth: true
     password:
+      # Se mantiene habilitado como via de vuelta: poniendo noauth: false se
+      # recupera el login de siempre, sin tocar usuarios ni contrasenas.
       enabled: true
       minLength: 5
       signup: false
     passkey:
       enabled: false
+frontend:
+  name: "Jarvis · NAS"
+  description: "Archivos del NAS de Jarvis, en solo lectura."
+  # Sin enlaces al GitHub/ayuda de FileBrowser: esta instalacion no es generica.
+  disableDefaultLinks: true
+  # La PWA que se instala en el iPhone es la de Jarvis, no esta.
+  disablePWAInstall: true
+  styling:
+    disableEventThemes: true
+    # Tema a juego con el PWA (fondo #07090d, acento turquesa).
+    customCSS: "/home/filebrowser/data/jarvis.css"
+    lightBackground: "#eef2f6"
+    darkBackground: "#07090d"
 userDefaults:
+  ui:
+    darkMode: true
+    themeColor: "#5eead4"
+    locale: "es"
+  listing:
+    viewMode: "grid"
+    gallerySize: 3
+    dateFormat: true
+    quickDownload: true
+  preview:
+    image: true
+    video: true
+    office: true
+  sidebar:
+    sticky: true
   account:
+    # Defaults para cualquier usuario nuevo: mirar y descargar, nada mas.
     permissions:
       api: false
       admin: false
@@ -48,4 +89,4 @@ userDefaults:
     lockPassword: false
     disableSettings: false
     loginMethod: "password"
-    disableUpdateNotifications: false
+    disableUpdateNotifications: true

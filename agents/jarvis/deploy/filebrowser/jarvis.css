@@ -1,0 +1,108 @@
+/* ==========================================================================
+   jarvis.css — tema de FileBrowser Quantum a juego con el PWA de Jarvis.
+   Se inyecta en <head> (frontend.styling.customCSS del config.yaml).
+   Paleta espejo de pwa/src/index.css: fondo #07090d, acento #5eead4.
+   ========================================================================== */
+
+/* --- tokens (los que documenta FileBrowser + los propios del tema) ------- */
+:root {
+  --background: #eef2f6;
+  --alt-background: #e3e9f0;
+  --surfacePrimary: #ffffff;
+  --surfaceSecondary: #f2f6f9;
+  --textPrimary: #0f1b26;
+  --textSecondary: #52657a;
+  --primary-color: #0d9488;
+  --accent: #2dd4bf;
+  --jarvis-border: rgba(13, 148, 136, 0.16);
+}
+
+.dark-mode {
+  --background: #07090d;
+  --alt-background: #0b0f15;
+  --surfacePrimary: #0f141c;
+  --surfaceSecondary: #141a24;
+  --textPrimary: #e9eff8;
+  --textSecondary: #8b98ab;
+  --primary-color: #5eead4;
+  --accent: #5eead4;
+  --jarvis-border: rgba(94, 234, 212, 0.1);
+}
+
+/* --- tipografia y fondo con el halo del chat ----------------------------- */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dark-mode body {
+  background:
+    radial-gradient(620px 320px at 50% -12%, rgba(94, 234, 212, 0.09), transparent 70%),
+    var(--background);
+  background-attachment: fixed;
+}
+
+/* --- cabecera y barra lateral discretas, con borde turquesa tenue -------- */
+header,
+.header {
+  border-bottom: 1px solid var(--jarvis-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.dark-mode header,
+.dark-mode .header {
+  background: rgba(7, 9, 13, 0.78);
+}
+
+/* --- botones y enlaces con el acento de Jarvis --------------------------- */
+.btn-primary,
+button.primary {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #03201c !important;
+  font-weight: 600;
+}
+
+a:hover,
+a:focus-visible {
+  color: var(--accent) !important;
+}
+
+/* --- esquinas y sombras coherentes con el PWA ---------------------------- */
+.card,
+.btn,
+input,
+select,
+textarea {
+  border-radius: 12px;
+}
+
+.card,
+.preview,
+.listing-item {
+  border: 1px solid transparent;
+}
+
+.dark-mode .card,
+.dark-mode .listing-item:hover {
+  background: var(--surface-2, #141a24);
+  border-color: var(--jarvis-border);
+}
+
+/* --- scrollbar fina, tipo terminal --------------------------------------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--jarvis-border);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

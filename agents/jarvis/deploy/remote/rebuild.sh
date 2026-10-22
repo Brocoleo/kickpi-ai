@@ -11,6 +11,7 @@
 # arranca, pero el healthcheck aún dice "starting".
 #
 # Uso: sudo bash deploy/remote/rebuild.sh agente [ejecutor|herramientas]
+#      sudo bash deploy/remote/rebuild.sh archivos   (FileBrowser, sin build)
 # =============================================================================
 set -euo pipefail
 
@@ -18,13 +19,16 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$RAIZ"
 
 SERVICIOS=()
+CONSTRUIBLES=()
 for arg in "$@"; do
   case "$arg" in
-    agente) SERVICIOS+=(jarvis-agent) ;;
-    ejecutor) SERVICIOS+=(jarvis-executor) ;;
-    herramientas) SERVICIOS+=(jarvis-tools) ;;
+    agente) SERVICIOS+=(jarvis-agent); CONSTRUIBLES+=(jarvis-agent) ;;
+    ejecutor) SERVICIOS+=(jarvis-executor); CONSTRUIBLES+=(jarvis-executor) ;;
+    herramientas) SERVICIOS+=(jarvis-tools); CONSTRUIBLES+=(jarvis-tools) ;;
+    # FileBrowser usa imagen oficial: se recrea con la config nueva, sin build.
+    archivos) SERVICIOS+=(filebrowser) ;;
     *)
-      echo "servicio desconocido: $arg (usa agente / ejecutor / herramientas)" >&2
+      echo "servicio desconocido: $arg (usa agente / ejecutor / herramientas / archivos)" >&2
       exit 2
       ;;
   esac
@@ -41,13 +45,15 @@ estado_de() {
     "$1" 2>/dev/null || echo "inexistente"
 }
 
-for servicio in "${SERVICIOS[@]}"; do
+for servicio in "${CONSTRUIBLES[@]}"; do
   echo "== construyendo $servicio"
   docker compose build "$servicio"
 done
 
 echo "== recreando: ${SERVICIOS[*]}"
-docker compose up -d "${SERVICIOS[@]}"
+# --force-recreate: FileBrowser lee config.yaml/tema solo al arrancar; si no
+# se fuerza, un cambio de tema no se aplicaría hasta el próximo reinicio.
+docker compose up -d --force-recreate "${SERVICIOS[@]}"
 
 # Espera activa: hasta 80 s por contenedor, informando solo de los cambios.
 for servicio in "${SERVICIOS[@]}"; do

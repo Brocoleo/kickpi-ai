@@ -61,6 +61,34 @@ el servidor. Inferencia en la nube (OpenRouter / cualquier API compatible).
 > existiendo para acceso directo. Portainer **no** admite subrutas, así que
 > conserva su puerto propio.
 
+## NAS desde el navegador (FileBrowser, solo lectura)
+
+El NAS se puede explorar desde cualquier dispositivo del tailnet **sin login**
+y **sin poder modificarlo**:
+
+- **Dirección**: `https://kickpi-jarvis.tail1e3b4d.ts.net:8443` (directo) o
+  `https://kickpi-jarvis.tail1e3b4d.ts.net/files/` (misma sesión que Jarvis).
+- **Sin login propio**: `auth.methods.noauth: true`. FileBrowser no es
+  alcanzable desde fuera del tailnet, así que la frontera de seguridad es
+  Tailscale, no un formulario.
+- **Solo lectura, tres candados**:
+  1. `sources[0].config.readOnly: true` en la config (deshabilita la UI, WebDAV
+     y la API de escritura);
+  2. el compose monta `/mnt/data/nas/files` como `:ro` (aunque alguien cambie
+     la config, el kernel no deja escribir);
+  3. los permisos por defecto no incluyen `create`/`modify`/`delete`/`share`.
+- **Subir archivos** es cosa del agente: el clip del chat
+  (`POST /api/files/upload`, 50 MB) deja todo en `Entrada/`. FileBrowser no
+  tiene botón de subida.
+- **Marca y tema**: `deploy/filebrowser/{config.yaml,jarvis.css}` (nombre
+  «Jarvis · NAS», fondo `#07090d`, acento turquesa). Se sincronizan en cada
+  `./deploy-all.sh` junto al resto del código.
+- **Volver al login**: poner `noauth: false` en el config y
+  `./deploy-all.sh --filebrowser`. El usuario `admin` y su contraseña siguen
+  intactos en BoltDB, así que la vuelta es inmediata.
+- Las preferencias de interfaz (idioma, vista) son por usuario y se guardan en
+  BoltDB; se cambian una vez desde Ajustes y sobreviven a los despliegues.
+
 ## Almacenamiento y montaje
 
 - El disco externo (HGST 750 GB, ext4) se monta en `/mnt/data` por **UUID**
@@ -519,7 +547,8 @@ El proxy `/files/*` reenvía a `filebrowser:8080/files/*` conservando el prefijo
 (la cookie de FileBrowser tiene `Path=/files`) y sin reescribir rutas. No
 propaga cabeceras hop-by-hop ni la cookie de sesión de Jarvis, y deja pasar
 todas las `Set-Cookie` de FileBrowser. Exige la misma autenticación que el
-resto de la API.
+resto de la API; una vez dentro, FileBrowser no pide login propio (`noauth`) y
+trabaja siempre en solo lectura.
 
 Rutas de aprobación (Fase C). Exigen **sesión de navegador** (el token de API
 no basta) y, si cambian estado, además `Origin` estricto y `X-CSRF-Token`:
@@ -722,7 +751,8 @@ Drop-in en `/etc/systemd/system/docker.service.d/override.conf`:
 `filebrowser/filebrowser` (upstream) esta **archivado** desde 2026-09-01.
 Migrado a **FileBrowser Quantum `1.5.8-stable-slim`** (fork mantenido,
 Apache-2.0, arm64), que conserva **BoltDB**: el usuario `admin` y su hash
-bcrypt se mantienen, sin perdida. Config en `deploy/filebrowser/config.yaml`.
+bcrypt se mantienen, sin perdida. Config en `deploy/filebrowser/config.yaml`
+(solo lectura, sin login y con marca Jarvis; ver «NAS desde el navegador»).
 Rollback: `/mnt/data/docker/filebrowser/{cfg,db}` (BD original) y
 `/mnt/data/nas/backups/filebrowser-pre-migration-*/`.
 
