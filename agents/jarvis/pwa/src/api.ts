@@ -4,6 +4,7 @@ import type {
   AuthMe,
   ChatResponse,
   Containers,
+  Conversation,
   Disks,
   Ejecucion,
   Equipos,
@@ -75,11 +76,17 @@ export type ChatStreamDone = {
   elapsed_ms?: number;
   /** Cuántas herramientas usó (el servidor ya las contó). */
   tools_count?: number;
+  /** El turno se cortó a propósito: el texto es parcial, no una respuesta. */
+  interrupted?: boolean;
 };
 
 export type ChatStreamHandlers = {
+  /** Id de la conversación, antes de cualquier token (permite detener). */
+  onMeta: (conversationId: string) => void;
   onSegment: () => void;
   onToken: (text: string) => void;
+  /** Una herramienta empieza a ejecutarse (aún no hay resultado). */
+  onToolStart: (tool: string) => void;
   onTool: (tool: ToolTrace) => void;
   onDone: (data: ChatStreamDone) => void;
   onError: (detail: string) => void;
@@ -158,11 +165,19 @@ export const api = {
         return;
       }
       switch (eventName) {
+        case "meta":
+          if (typeof payload.conversation_id === "string") {
+            handlers.onMeta(payload.conversation_id);
+          }
+          break;
         case "segment":
           handlers.onSegment();
           break;
         case "token":
           if (typeof payload.text === "string") handlers.onToken(payload.text);
+          break;
+        case "tool_start":
+          if (typeof payload.tool === "string") handlers.onToolStart(payload.tool);
           break;
         case "tool":
           handlers.onTool(payload as unknown as ToolTrace);
@@ -254,15 +269,29 @@ export const api = {
       error: string | null;
     }>(`/aprobaciones/${encodeURIComponent(id)}/ejecutar`, undefined, csrfToken),
 
+  /** Detiene el turno en curso. Idempotente: `stopped=false` si ya cerró. */
+  stopChat: (conversationId: string) =>
+    request<{ ok: boolean; stopped: boolean }>("/chat/stop", {
+      method: "POST",
+      body: JSON.stringify({ conversation_id: conversationId }),
+    }),
+
   conversations: () =>
-    request<{
-      conversations: { id: string; title: string; updated_at: string }[];
-      count: number;
-    }>("/conversations"),
+    request<{ conversations: Conversation[]; count: number }>("/conversations"),
 
   conversation: (id: string) =>
     request<{ conversation_id: string; messages: StoredMessage[] }>(
       `/conversations/${encodeURIComponent(id)}`,
+    ),
+
+  /** Borra una conversación. Destructivo: exige sesión humana + CSRF. */
+  deleteConversation: (id: string, csrfToken: string | null) =>
+    request<{ ok: boolean; conversation_id: string }>(
+      `/conversations/${encodeURIComponent(id)}`,
+      {
+        method: "DELETE",
+        headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+      },
     ),
 
   health: async (): Promise<Health> => {

@@ -145,12 +145,22 @@ async function mockBackend(page: Page, backend: Backend = {}): Promise<void> {
       });
     }
 
+    if (ruta === "/chat/stop") {
+      return json({ ok: true, stopped: true });
+    }
+
     if (ruta === "/conversations") {
       return json(
         backend.historial
           ? {
               conversations: [
-                { id: conversacion, title: "", updated_at: AHORA.toISOString() },
+                {
+                  id: conversacion,
+                  title: "",
+                  updated_at: AHORA.toISOString(),
+                  message_count: backend.historial.length,
+                  preview: "¿cómo está el sistema?",
+                },
               ],
               count: 1,
             }
@@ -268,6 +278,50 @@ test("restaura un historial con fecha, herramientas y respuesta", async ({ page 
   // El bloque nace plegado cuando hay varias acciones; con una, abierto.
   await expect(page.getByRole("button", { name: /Ocultar actividad/ })).toBeVisible();
   await expect(page.getByText("CPU 5%")).toBeVisible();
+});
+
+test("el historial de conversaciones se abre y se puede cerrar", async ({ page }) => {
+  await mockBackend(page, { historial: turnoConHerramienta() });
+  await page.goto("/");
+  await expect(page.getByText("Todo tranquilo.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Conversaciones" }).click();
+  const panel = page.locator(".history-panel");
+  await expect(panel).toBeVisible();
+  // Sin título propio, manda la vista previa del último mensaje del usuario.
+  await expect(panel.getByText("¿cómo está el sistema?")).toBeVisible();
+  await expect(panel.getByText(/4 mensajes/)).toBeVisible();
+
+  await panel.getByRole("button", { name: "Cerrar" }).click();
+  await expect(panel).toBeHidden();
+});
+
+test("un turno detenido se marca como interrumpido", async ({ page }) => {
+  await mockBackend(page, {
+    stream: sse([
+      ["meta", { conversation_id: "c1" }],
+      ["segment", {}],
+      ["token", { text: "Estoy mirando" }],
+      [
+        "done",
+        {
+          conversation_id: "c1",
+          reply: "Estoy mirando",
+          tool_trace: [],
+          model: null,
+          interrupted: true,
+        },
+      ],
+    ]),
+  });
+
+  await page.goto("/");
+  const caja = page.getByPlaceholder(/Escribe a Jarvis/);
+  await caja.fill("¿cómo está el sistema?");
+  await caja.press("Enter");
+
+  await expect(page.getByText("Estoy mirando")).toBeVisible();
+  await expect(page.getByText("interrumpido")).toBeVisible();
 });
 
 test("exporta la conversación a Markdown", async ({ page }) => {

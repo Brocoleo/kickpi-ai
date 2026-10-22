@@ -111,6 +111,13 @@ async def _run_tools(state: AgentState) -> dict:
         except json.JSONDecodeError:
             args = {}
 
+        # Aviso de INICIO: la PWA puede mostrar «usando X…» mientras la
+        # herramienta trabaja. El evento `tool` de después solo confirma el
+        # resultado; sin este, una consulta lenta parecía un modelo pensando.
+        emit = STREAM_EMIT.get()
+        if emit is not None:
+            emit({"event": "tool_start", "tool": name, "arguments": args})
+
         started = time.monotonic()
         ok = True
         try:

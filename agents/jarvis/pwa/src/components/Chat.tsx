@@ -1,9 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "../api";
 import { shortModel } from "../lib/format";
 import { RichText } from "../lib/markdown";
-import type { StoredMessage, ToolCall, ToolTrace } from "../types";
-import { PlusIcon, SendIcon } from "./icons";
+import type { Conversation, StoredMessage, ToolCall, ToolTrace } from "../types";
+import {
+  HistoryIcon,
+  PlusIcon,
+  SendIcon,
+  TrashIcon,
+  XIcon,
+} from "./icons";
 import { ToolActivity, type ToolStep } from "./ToolActivity";
 
 /** El id de conversacion NO es un secreto: localStorage evita perderlo si
@@ -25,6 +31,8 @@ type Message = {
   at?: string;
   /** Burbuja que sigue recibiendo tokens por SSE. */
   streaming?: boolean;
+  /** El turno se cortó a medias: el texto no es una respuesta completa. */
+  interrupted?: boolean;
 };
 
 const SUGGESTIONS = [
@@ -115,6 +123,7 @@ export function mapStored(stored: StoredMessage[]): Message[] {
       content,
       at: fila.created_at,
       tools: pasos.length > 0 ? pasos : undefined,
+      interrupted: fila.interrupted || undefined,
     });
   }
 
@@ -167,6 +176,18 @@ function hora(iso?: string): string | null {
   const fecha = new Date(iso);
   if (Number.isNaN(fecha.getTime())) return null;
   return fecha.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Fecha compacta para la lista de conversaciones. */
+function fechaLista(iso: string): string {
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return "";
+  const ahora = new Date();
+  if (mismoDia(fecha, ahora)) return "hoy";
+  const ayer = new Date(ahora);
+  ayer.setDate(ahora.getDate() - 1);
+  if (mismoDia(fecha, ayer)) return "ayer";
+  return fecha.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
 }
 
 // --------------------------------------------------------------------------- //
@@ -244,7 +265,13 @@ function alFinal(el: HTMLElement, suave = true): void {
   }
 }
 
-export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
+export function Chat({
+  onUnauthorized,
+  csrfToken = null,
+}: {
+  onUnauthorized: () => void;
+  csrfToken?: string | null;
+}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -254,6 +281,13 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [atBottom, setAtBottom] = useState(true);
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [avisoCopia, setAvisoCopia] = useState<string | null>(null);
+  // Lista de conversaciones (panel de historial) y borrado en dos pasos.
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Herramienta ejecutándose AHORA (evento tool_start): se muestra en vivo
+  // dentro de la burbuja, no como un paso ya terminado.
+  const [liveTool, setLiveTool] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -264,43 +298,55 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
   const historial = useRef<string[]>([]);
   const [indiceHistorial, setIndiceHistorial] = useState(-1);
 
-  // Restaura la conversacion: primero la ultima usada; si no hay id (iOS
-  // reinicio la PWA), la mas reciente del servidor.
-  useEffect(() => {
-    let cancelled = false;
+  const refreshConversations = useCallback(async (): Promise<Conversation[]> => {
+    try {
+      const data = await api.conversations();
+      // Defensivo: un backend viejo (o un mock) puede no traer la lista.
+      const items = Array.isArray(data?.conversations) ? data.conversations : [];
+      setConversations(items);
+      return items;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) onUnauthorized();
+      return [];
+    }
+  }, [onUnauthorized]);
 
-    const load = async (id: string): Promise<boolean> => {
+  const loadConversation = useCallback(
+    async (id: string): Promise<boolean> => {
       try {
-        const { messages: stored } = await api.conversation(id);
-        if (cancelled) return true;
-        const mapped = mapStored(stored);
-        if (mapped.length > 0) setMessages(mapped);
+        const data = await api.conversation(id);
+        const stored = Array.isArray(data?.messages) ? data.messages : [];
+        setMessages(mapStored(stored));
         const last = stored[stored.length - 1];
         setAwaitingReply(last?.role === "tool");
+        setConversationId(id);
+        rememberConversation(id);
         return true;
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) onUnauthorized();
         return false;
       }
-    };
+    },
+    [onUnauthorized],
+  );
+
+  // Restaura la conversacion: primero la ultima usada; si no hay id (iOS
+  // reinicio la PWA), la mas reciente del servidor.
+  useEffect(() => {
+    let cancelled = false;
 
     const restoreLatest = async () => {
-      try {
-        const { conversations } = await api.conversations();
-        if (cancelled || conversations.length === 0) return;
-        const latest = conversations[0];
-        rememberConversation(latest.id);
-        setConversationId(latest.id);
-        await load(latest.id);
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) onUnauthorized();
-      }
+      const items = await refreshConversations();
+      if (cancelled || items.length === 0) return;
+      await loadConversation(items[0].id);
     };
 
     const stored = readConversationId();
     if (stored) {
-      setConversationId(stored);
-      void load(stored).then((ok) => {
+      // La lista se necesita para el panel de historial, aunque el hilo se
+      // restaure desde el id guardado.
+      void refreshConversations();
+      void loadConversation(stored).then((ok) => {
         if (!ok) void restoreLatest();
       });
     } else {
@@ -310,7 +356,7 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [onUnauthorized]);
+  }, [refreshConversations, loadConversation]);
 
   // Si el ultimo mensaje persistido es una herramienta, el turno aun se esta
   // cerrando (p.ej. el agente reanuda tras aprobar). Se refresca solo.
@@ -403,6 +449,7 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
       { id: uid(), role: "user", content, at: new Date().toISOString() },
     ]);
     setSending(true);
+    setLiveTool(null);
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -411,6 +458,12 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
         content,
         conversationId,
         {
+          onMeta: (id) => {
+            // El id llega antes del primer token: desde ese momento se puede
+            // detener el turno aunque la conversación sea nueva.
+            rememberConversation(id);
+            setConversationId(id);
+          },
           onSegment: () => {
             setMessages((prev) => [
               ...prev,
@@ -447,7 +500,27 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
               ];
             });
           },
+          onToolStart: (tool: string) => {
+            setLiveTool(tool);
+            // Si el modelo llamó a una herramienta sin narrar nada, no hay
+            // burbuja donde colgar la actividad: se crea vacía ahora para
+            // que el resultado aparezca en su sitio al terminar.
+            setMessages((prev) => {
+              if (prev.some((message) => message.streaming)) return prev;
+              return [
+                ...prev,
+                {
+                  id: uid(),
+                  role: "assistant",
+                  content: "",
+                  at: new Date().toISOString(),
+                  streaming: true,
+                },
+              ];
+            });
+          },
           onTool: (tool: ToolTrace) => {
+            setLiveTool(null);
             const paso: ToolStep = {
               id: uid(),
               tool: tool.tool,
@@ -471,24 +544,33 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
             });
           },
           onDone: (data) => {
+            setLiveTool(null);
             rememberConversation(data.conversation_id);
             setConversationId(data.conversation_id);
             setMessages((prev) => {
               const next = prev.map((message) =>
-                message.streaming ? { ...message, streaming: false } : message,
+                message.streaming
+                  ? {
+                      ...message,
+                      streaming: false,
+                      interrupted: data.interrupted || undefined,
+                    }
+                  : message,
               );
               const streamed = next
                 .filter((message) => message.role === "assistant")
                 .map((message) => message.content)
                 .join("\n");
-              // Respuestas que no pasan por el stream (nodo "limit" o
-              // fallback del proveedor): se muestran igualmente.
+              // Respuestas que no pasan por el stream (nodo "limit",
+              // fallback del proveedor o turno detenido antes del primer
+              // token): se muestran igualmente.
               if (data.reply && !streamed.includes(data.reply)) {
                 next.push({
                   id: uid(),
                   role: "assistant",
                   content: data.reply,
                   at: new Date().toISOString(),
+                  interrupted: data.interrupted || undefined,
                 });
               }
               // El diagnóstico va en la última burbuja de Jarvis.
@@ -506,12 +588,16 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
               return next;
             });
             setAwaitingReply(false);
+            // La lista sí se refresca: cambia el título/vista previa de la
+            // conversación y, en una nueva, aparece por primera vez.
+            void refreshConversations();
             // No se vuelve a pedir el historial al cerrar: el stream ya es
             // la fuente de verdad de este turno y el GET solo provocaba un
             // parpadeo (reemplazaba burbujas idénticas por otras nuevas) y
             // perdía el diagnóstico recién recibido.
           },
           onError: (detail) => {
+            setLiveTool(null);
             setMessages((prev) => [
               ...prev.map((message) =>
                 message.streaming ? { ...message, streaming: false } : message,
@@ -550,6 +636,7 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
     } finally {
       abortRef.current = null;
       setSending(false);
+      setLiveTool(null);
       setMessages((prev) =>
         prev.map((message) =>
           message.streaming ? { ...message, streaming: false } : message,
@@ -558,16 +645,85 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
     }
   }
 
+  /**
+   * Detiene el turno en curso.
+   *
+   * Se pide al servidor (no basta con cortar el fetch: así el agente guarda
+   * el texto parcial y la conversación queda coherente). Si aún no hay id de
+   * conversación —no debería, llega en `meta`— se corta la conexión.
+   */
+  async function stopTurn(): Promise<void> {
+    const id = conversationId;
+    if (!id) {
+      abortRef.current?.abort();
+      return;
+    }
+    try {
+      // Si el servidor no contesta en un par de segundos, no se deja al
+      // usuario esperando: se corta la conexión y el agente guardará lo que
+      // ya había enviado.
+      await Promise.race([
+        api.stopChat(id),
+        new Promise((_, reject) =>
+          window.setTimeout(() => reject(new Error("timeout")), 2500),
+        ),
+      ]);
+    } catch {
+      abortRef.current?.abort();
+    }
+  }
+
   function newConversation() {
     abortRef.current?.abort();
     setMessages([]);
     setConversationId(null);
     setAwaitingReply(false);
+    setLiveTool(null);
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(STORAGE_KEY);
     setInput("");
     setIndiceHistorial(-1);
+    setHistoryOpen(false);
     textareaRef.current?.focus();
+  }
+
+  async function openConversation(id: string): Promise<void> {
+    if (id === conversationId) {
+      setHistoryOpen(false);
+      return;
+    }
+    // Cambiar de conversación con un turno en marcha lo corta en local (para
+    // que no lleguen eventos a la vista nueva) y avisa al servidor para que
+    // guarde el texto parcial en la conversación de origen.
+    if (sending) {
+      abortRef.current?.abort();
+      if (conversationId) {
+        try {
+          await api.stopChat(conversationId);
+        } catch {
+          /* la desconexión ya dejó el turno en pausa */
+        }
+      }
+    }
+    setHistoryOpen(false);
+    setConfirmDelete(null);
+    setAwaitingReply(false);
+    await loadConversation(id);
+  }
+
+  async function removeConversation(id: string): Promise<void> {
+    try {
+      await api.deleteConversation(id, csrfToken);
+    } catch {
+      setAvisoCopia("No se pudo borrar");
+      window.setTimeout(() => setAvisoCopia(null), 2000);
+      return;
+    }
+    setConfirmDelete(null);
+    if (id === conversationId) {
+      newConversation();
+    }
+    await refreshConversations();
   }
 
   async function copiarMarkdown(): Promise<void> {
@@ -603,11 +759,13 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
     setInput(previos[siguiente]);
   }
 
-  const showThinking =
-    sending &&
-    !messages.some(
-      (message) => message.streaming && message.content.trim().length > 0,
-    );
+  // Hay una burbuja escribiendo: el indicador de «pensando» sobra.
+  const hayBurbuja = messages.some(
+    (message) => message.streaming && message.content.trim().length > 0,
+  );
+  // Herramienta en curso sin burbuja de texto: se muestra sola, con nombre.
+  const showLive = sending && Boolean(liveTool) && !hayBurbuja;
+  const showThinking = sending && !hayBurbuja && !liveTool;
 
   // Agrupa por día para no perder la noción del tiempo en un hilo largo.
   const conFechas = useMemo(() => {
@@ -636,6 +794,20 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
         <h1 className="screen-title">Chat</h1>
         <div className="chat-actions">
           {avisoCopia && <span className="chat-toast">{avisoCopia}</span>}
+          <button
+            className="ghost-btn history-btn"
+            type="button"
+            aria-label="Conversaciones"
+            aria-expanded={historyOpen}
+            onClick={() => {
+              setConfirmDelete(null);
+              setHistoryOpen((valor) => !valor);
+              void refreshConversations();
+            }}
+          >
+            <HistoryIcon />
+            <span className="history-btn-label">Historial</span>
+          </button>
           {messages.length > 0 && (
             <div className="chat-menu-wrap">
               <button
@@ -705,6 +877,91 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
         </div>
       </div>
 
+      {historyOpen && (
+        <div
+          className="history-backdrop"
+          onPointerDown={() => setHistoryOpen(false)}
+        >
+          <aside
+            className="history-panel"
+            role="dialog"
+            aria-label="Conversaciones"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <header className="history-head">
+              <h2>Conversaciones</h2>
+              <button
+                className="icon-btn"
+                type="button"
+                aria-label="Cerrar"
+                onClick={() => setHistoryOpen(false)}
+              >
+                <XIcon />
+              </button>
+            </header>
+            <div className="history-list">
+              {conversations.length === 0 && (
+                <p className="history-empty">
+                  Aún no hay conversaciones guardadas.
+                </p>
+              )}
+              {conversations.map((item) => (
+                <div
+                  key={item.id}
+                  className={`history-item${
+                    item.id === conversationId ? " active" : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="history-open"
+                    onClick={() => void openConversation(item.id)}
+                  >
+                    <span className="history-title">
+                      {item.title || item.preview || "Conversación"}
+                    </span>
+                    <span className="history-meta">
+                      {fechaLista(item.updated_at)} · {item.message_count}{" "}
+                      {item.message_count === 1 ? "mensaje" : "mensajes"}
+                    </span>
+                  </button>
+                  {confirmDelete === item.id ? (
+                    <div className="history-confirm">
+                      <button
+                        type="button"
+                        className="ghost-btn history-danger"
+                        onClick={() => void removeConversation(item.id)}
+                      >
+                        Borrar
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() => setConfirmDelete(null)}
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="icon-btn history-del"
+                      aria-label="Borrar conversación"
+                      // Borrar el hilo que está respondiendo dejaría el
+                      // turno escribiendo en una conversación inexistente.
+                      disabled={sending && item.id === conversationId}
+                      onClick={() => setConfirmDelete(item.id)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
+
       <div className="chat-scroll" ref={scrollRef} onScroll={alDesplazar}>
         <div className="chat-inner">
           {messages.length === 0 && (
@@ -766,6 +1023,15 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
                     <RichText text={message.content} />
                   </div>
                 )}
+                {message.streaming && liveTool && message.content && (
+                  <span className="live-status" role="status">
+                    <span className="live-dot" aria-hidden="true" />
+                    Usando <code>{liveTool}</code>…
+                  </span>
+                )}
+                {message.interrupted && (
+                  <span className="interrupted-tag">interrumpido</span>
+                )}
                 {message.role === "error" && message.retry && (
                   <button
                     type="button"
@@ -801,6 +1067,16 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
                 <span />
                 <span />
               </div>
+            </div>
+          )}
+
+          {showLive && (
+            <div className="msg assistant">
+              <span className="msg-role">Jarvis</span>
+              <span className="live-status" role="status">
+                <span className="live-dot" aria-hidden="true" />
+                Usando <code>{liveTool}</code>…
+              </span>
             </div>
           )}
 
@@ -867,7 +1143,7 @@ export function Chat({ onUnauthorized }: { onUnauthorized: () => void }) {
             className="send-btn stop-btn"
             type="button"
             aria-label="Detener la respuesta"
-            onClick={() => abortRef.current?.abort()}
+            onClick={() => void stopTurn()}
           >
             <span aria-hidden="true" />
           </button>

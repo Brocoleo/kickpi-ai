@@ -178,7 +178,7 @@ def test_migracion_anade_columnas_sin_perder_datos(tmp_path, monkeypatch):
     finally:
         get_settings.cache_clear()
 
-    assert {"tool_ok", "tool_duration_ms", "tool_summary"} <= columnas
+    assert {"tool_ok", "tool_duration_ms", "tool_summary", "interrupted"} <= columnas
     assert filas == [("user", "mensaje antiguo")]
 
 

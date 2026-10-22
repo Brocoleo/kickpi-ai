@@ -116,6 +116,10 @@ MIGRACIONES: tuple[tuple[str, str, str], ...] = (
     ("messages", "tool_ok", "INTEGER"),
     ("messages", "tool_duration_ms", "INTEGER"),
     ("messages", "tool_summary", "TEXT"),
+    # Turno cortado por el usuario o por una desconexión: el texto que sí
+    # llegó se conserva y la PWA lo muestra marcado. Sin esta columna, al
+    # recargar el historial esa respuesta parcial parecía completa.
+    ("messages", "interrupted", "INTEGER"),
 )
 
 

@@ -47,6 +47,19 @@ export type StoredMessage = {
   tool_ok?: boolean;
   tool_duration_ms?: number;
   tool_summary?: string;
+  /** Turno cortado por el usuario (o por una desconexión) a medias. */
+  interrupted?: boolean;
+};
+
+/** Fila de la lista de conversaciones (sin abrir el historial completo). */
+export type Conversation = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  /** Último mensaje del usuario, en una línea. */
+  preview: string;
 };
 
 export type SystemStats = {

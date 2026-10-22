@@ -345,7 +345,14 @@ Detalles:
 Seis secciones: **Chat**, **Métricas**, **Equipos**, **Archivos**,
 **Aprobaciones**, **Ajustes**.
 
-- Chat con memoria persistente, chips de herramientas y modelo usado.
+- Chat con memoria persistente, actividad de herramientas agrupada y modelo
+  usado.
+- **Historial de conversaciones** (panel lateral): cambiar de hilo, ver vista
+  previa y número de mensajes, y borrar en dos pasos (sesión + CSRF).
+- **Detener** un turno sin perder lo escrito: se pide al servidor, que guarda
+  el texto parcial y lo marca como *interrumpido* (también si se cae la red).
+- La herramienta que está trabajando se muestra **en vivo** dentro de la
+  burbuja («usando `disk_usage`…»), no solo al terminar.
 - Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
   contenedores; refresco cada 10 s.
 - Equipos muestra el estado de los equipos remotos (y solo eso).
@@ -437,9 +444,10 @@ o **token de API**.
 | POST | `/api/auth/logout` | Invalida la sesión |
 | GET | `/api/auth/me` | Estado de autenticación (+ token CSRF si hay sesión) |
 | POST | `/api/chat` | `{"message": "...", "conversation_id": "..."}` |
-| POST | `/api/chat/stream` | Igual, pero responde **SSE** (`segment`, `token`, `tool`, `done`) |
+| POST | `/api/chat/stream` | Igual, pero responde **SSE** (`meta`, `segment`, `token`, `tool_start`, `tool`, `done`, `error`) |
 | | | Ambas aceptan `"model"` (opcional): fuerza un modelo de la cadena, sin fallback (400 si no pertenece). Es para el banco |
-| GET | `/api/conversations` | Lista de conversaciones |
+| POST | `/api/chat/stop` | `{"conversation_id": "..."}` detiene el turno en curso; el parcial se guarda marcado `interrupted` |
+| GET | `/api/conversations` | Lista de conversaciones (título, vista previa, nº de mensajes) |
 | GET | `/api/conversations/{id}` | Mensajes de una conversación (con id, fecha y metadatos de herramientas) |
 | DELETE | `/api/conversations/{id}` | Borra la conversación y sus mensajes (sesión + CSRF) |
 | GET | `/api/tools` | Herramientas permitidas |

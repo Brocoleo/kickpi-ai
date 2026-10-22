@@ -172,7 +172,12 @@ export default function App() {
           tab === "files" ? "files-mode" : ""
         }`}
       >
-        {tab === "chat" && <Chat onUnauthorized={handleUnauthorized} />}
+        {tab === "chat" && (
+          <Chat
+            onUnauthorized={handleUnauthorized}
+            csrfToken={csrfToken}
+          />
+        )}
         {tab === "equipos" && <Equipos onUnauthorized={handleUnauthorized} />}
         {filesReady && (
           <div className="tab-pane" hidden={tab !== "files"}>

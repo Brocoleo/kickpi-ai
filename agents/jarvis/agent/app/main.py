@@ -49,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.10.1"
+VERSION = "0.11.0"
 
 
 @asynccontextmanager
@@ -131,6 +131,10 @@ class ChatResponse(BaseModel):
     reply: str
     tool_trace: list[dict] = []
     model: str | None = None
+
+
+class StopRequest(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=64)
 
 
 class LoginRequest(BaseModel):
@@ -622,7 +626,10 @@ def _prepare_chat(body: ChatRequest) -> tuple[str, list[dict]]:
     if conv_id and not memory.conversation_exists(conv_id):
         raise HTTPException(404, "Conversación no encontrada")
     if not conv_id:
-        conv_id = memory.create_conversation(body.message[:60])
+        # El título sale del primer mensaje, en una sola línea: un salto de
+        # línea en la lista de conversaciones rompería la fila.
+        titulo = " ".join(body.message.split())[:60]
+        conv_id = memory.create_conversation(titulo)
     memory.add_message(conv_id, "user", body.message)
     history = memory.get_messages(conv_id, settings.history_limit)
     return conv_id, [{"role": "system", "content": SYSTEM_PROMPT}] + history
@@ -689,6 +696,177 @@ async def chat(body: ChatRequest) -> ChatResponse:
     )
 
 
+# Turnos en curso, por conversación. El botón «detener» de la PWA marca el
+# evento y el generador del turno cierra el stream con `done interrupted`,
+# conservando el texto que el usuario llegó a ver. Un diccionario basta: el
+# agente corre en un único proceso y cada conversación tiene un turno a la vez.
+_STOP_EVENTS: dict[str, asyncio.Event] = {}
+
+
+def _persist_interrupted_sync(
+    conv_id: str, raw_text: str, *, siempre: bool = False
+) -> str:
+    """Guarda un turno cortado a medias, sin inventar texto.
+
+    Si el usuario detuvo antes del primer token, se persiste una nota corta
+    (`siempre=True`) para que al recargar no quede una pregunta sin rastro de
+    respuesta. En una desconexión de red solo se guarda lo que llegó.
+    """
+    texto = raw_text.strip()
+    if not texto:
+        if not siempre:
+            return ""
+        texto = "(Detenido antes de recibir respuesta.)"
+    memory.add_message(conv_id, "assistant", texto, interrupted=True)
+    memory.touch_conversation(conv_id)
+    return texto
+
+
+async def _turn_stream(
+    conv_id: str, base_messages: list[dict], override: tuple[str, ...] | None
+):
+    """Generador SSE de un turno, cancelable y persistente.
+
+    Eventos: `meta` (id de conversación, antes que nada), `segment`, `token`,
+    `tool_start` (herramienta en curso), `tool` (terminada), `done` (turno
+    persistido) y `error`.
+    """
+    state = {
+        "messages": base_messages,
+        "tool_trace": [],
+        "iterations": 0,
+        "conversation_id": conv_id,
+    }
+    queue: asyncio.Queue = asyncio.Queue()
+    final_state: dict | None = None
+    started = time.monotonic()
+    token_modelo = MODEL_OVERRIDE.set(override) if override else None
+    stop_event = asyncio.Event()
+    _STOP_EVENTS[conv_id] = stop_event
+    # Texto realmente enviado al cliente: es lo único que se puede guardar
+    # como parcial, porque el estado del grafo solo avanza al cerrar un nodo.
+    texto: list[str] = []
+    # Del turno, no de la conversación: `tool_trace` se acumula entre turnos,
+    # así que no sirve para decir «esta respuesta usó 2».
+    herramientas = 0
+    persistido = False
+
+    def emit(event: dict) -> None:
+        if event.get("event") == "token":
+            texto.append(event.get("text") or "")
+        queue.put_nowait(event)
+
+    async def run_graph() -> None:
+        try:
+            async for snapshot in AGENT.astream(state, stream_mode="values"):
+                await queue.put({"event": "__state", "state": snapshot})
+        except Exception as exc:  # noqa: BLE001 - se informa al cliente
+            log.exception("chat en streaming fallo")
+            await queue.put({"event": "__error", "detail": str(exc)})
+        finally:
+            await queue.put({"event": "__end"})
+
+    # El ContextVar lo heredan las tareas que crea el grafo.
+    token = STREAM_EMIT.set(emit)
+    task = asyncio.create_task(run_graph())
+    try:
+        # El id viaja antes de cualquier token: la PWA puede detener un turno
+        # desde el primer instante, incluso en una conversación nueva.
+        yield _sse("meta", {"conversation_id": conv_id})
+
+        detenido = False
+        fallo = False
+        while True:
+            if stop_event.is_set():
+                detenido = True
+                break
+            try:
+                # Sondeo corto: si el modelo tarda en emitir (o está dentro de
+                # una herramienta), el botón detener no puede esperar al
+                # siguiente token.
+                event = await asyncio.wait_for(queue.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            kind = event.get("event")
+            if kind == "__state":
+                final_state = event["state"]
+                continue
+            if kind == "__error":
+                fallo = True
+                yield _sse("error", {"detail": event["detail"]})
+                break
+            if kind == "__end":
+                break
+            if kind == "tool":
+                herramientas += 1
+            yield _sse(kind, event)
+
+        if detenido:
+            task.cancel()
+            reply = await asyncio.to_thread(
+                _persist_interrupted_sync,
+                conv_id,
+                "".join(texto),
+                siempre=True,
+            )
+            persistido = True
+            yield _sse(
+                "done",
+                {
+                    "conversation_id": conv_id,
+                    "reply": reply,
+                    "tool_trace": [],
+                    "model": None,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "tools_count": herramientas,
+                    "interrupted": True,
+                },
+            )
+        elif fallo:
+            # Un fallo inesperado NO deja un historial a medias (mensajes con
+            # tool_calls sin resultado): solo se guarda el texto ya visible.
+            parcial = "".join(texto)
+            if parcial.strip():
+                await asyncio.to_thread(_persist_interrupted_sync, conv_id, parcial)
+                persistido = True
+        elif final_state is not None:
+            reply = await asyncio.to_thread(
+                _persist_turn_sync, conv_id, len(base_messages), final_state
+            )
+            persistido = True
+            yield _sse(
+                "done",
+                {
+                    "conversation_id": conv_id,
+                    "reply": reply,
+                    "tool_trace": final_state.get("tool_trace", []),
+                    "model": final_state.get("model_used"),
+                    # Diagnóstico del turno: permite ver desde la PWA (y
+                    # desde el banco) cuánto tardó y cuántas herramientas
+                    # usó, sin abrir logs del contenedor.
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "tools_count": herramientas,
+                },
+            )
+    finally:
+        STREAM_EMIT.reset(token)
+        if token_modelo is not None:
+            MODEL_OVERRIDE.reset(token_modelo)
+        if _STOP_EVENTS.get(conv_id) is stop_event:
+            _STOP_EVENTS.pop(conv_id, None)
+        if not task.done():
+            task.cancel()
+        if not persistido:
+            # Desconexión del cliente (red, pestaña cerrada): se guarda lo que
+            # alcanzó a verse. No se espera: en una cancelación, cualquier
+            # `await` aquí se interrumpiría; el hilo termina por su cuenta.
+            parcial = "".join(texto)
+            if parcial.strip():
+                asyncio.get_running_loop().create_task(
+                    asyncio.to_thread(_persist_interrupted_sync, conv_id, parcial)
+                )
+
+
 @app.post(
     "/api/chat/stream",
     tags=["chat"],
@@ -696,9 +874,6 @@ async def chat(body: ChatRequest) -> ChatResponse:
 )
 async def chat_stream(body: ChatRequest) -> StreamingResponse:
     """Chat en streaming (SSE).
-
-    Eventos: `segment` (nueva burbuja), `token` (texto incremental),
-    `tool` (herramienta terminada), `done` (turno persistido) y `error`.
 
     `model` (opcional) fuerza un único modelo de la cadena configurada, sin
     fallback: es para medir latencias desde el banco. Si no pertenece a la
@@ -708,81 +883,8 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
     # es un 400 normal y no un error a mitad de un SSE ya empezado.
     override = _modelo_forzado(body)
     conv_id, base_messages = await asyncio.to_thread(_prepare_chat, body)
-    state = {
-        "messages": base_messages,
-        "tool_trace": [],
-        "iterations": 0,
-        "conversation_id": conv_id,
-    }
-
-    async def event_source():
-        queue: asyncio.Queue = asyncio.Queue()
-        final_state: dict | None = None
-        started = time.monotonic()
-        token_modelo = MODEL_OVERRIDE.set(override) if override else None
-
-        def emit(event: dict) -> None:
-            queue.put_nowait(event)
-
-        async def run_graph() -> None:
-            try:
-                async for snapshot in AGENT.astream(state, stream_mode="values"):
-                    await queue.put({"event": "__state", "state": snapshot})
-            except Exception as exc:  # noqa: BLE001 - se informa al cliente
-                log.exception("chat en streaming fallo")
-                await queue.put({"event": "__error", "detail": str(exc)})
-            finally:
-                await queue.put({"event": "__end"})
-
-        # El ContextVar lo heredan las tareas que crea el grafo.
-        token = STREAM_EMIT.set(emit)
-        task = asyncio.create_task(run_graph())
-        # Del turno, no de la conversación: `tool_trace` se acumula entre
-        # turnos, así que no sirve para decir «esta respuesta usó 2».
-        herramientas = 0
-        try:
-            while True:
-                event = await queue.get()
-                kind = event.get("event")
-                if kind == "__state":
-                    final_state = event["state"]
-                    continue
-                if kind == "__error":
-                    yield _sse("error", {"detail": event["detail"]})
-                    break
-                if kind == "__end":
-                    break
-                if kind == "tool":
-                    herramientas += 1
-                yield _sse(kind, event)
-
-            if final_state is not None:
-                reply = await asyncio.to_thread(
-                    _persist_turn_sync, conv_id, len(base_messages), final_state
-                )
-                yield _sse(
-                    "done",
-                    {
-                        "conversation_id": conv_id,
-                        "reply": reply,
-                        "tool_trace": final_state.get("tool_trace", []),
-                        "model": final_state.get("model_used"),
-                        # Diagnóstico del turno: permite ver desde la PWA (y
-                        # desde el banco) cuánto tardó y cuántas herramientas
-                        # usó, sin abrir logs del contenedor.
-                        "elapsed_ms": int((time.monotonic() - started) * 1000),
-                        "tools_count": herramientas,
-                    },
-                )
-        finally:
-            STREAM_EMIT.reset(token)
-            if token_modelo is not None:
-                MODEL_OVERRIDE.reset(token_modelo)
-            if not task.done():
-                task.cancel()
-
     return StreamingResponse(
-        event_source(),
+        _turn_stream(conv_id, base_messages, override),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-store",
@@ -791,6 +893,25 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post(
+    "/api/chat/stop",
+    tags=["chat"],
+    dependencies=[Depends(require_auth)],
+)
+async def chat_stop(body: StopRequest) -> dict:
+    """Detiene el turno en curso de una conversación.
+
+    Idempotente: si no hay turno activo responde `stopped=False` (el usuario
+    pudo pulsar dos veces). No es destructivo, así que no exige CSRF; sí
+    exige estar autenticado.
+    """
+    stop_event = _STOP_EVENTS.get(body.conversation_id)
+    if stop_event is None:
+        return {"ok": True, "stopped": False}
+    stop_event.set()
+    return {"ok": True, "stopped": True}
 
 
 # --------------------------------------------------------------------------- #

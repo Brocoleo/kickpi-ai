@@ -40,13 +40,32 @@ def touch_conversation(conv_id: str) -> None:
 
 
 def list_conversations(limit: int = 50) -> list[dict]:
+    """Conversaciones con lo justo para pintar la lista sin abrir cada una.
+
+    `preview` es el último mensaje del usuario (lo que de verdad identifica
+    una conversación) y `message_count` evita una petición por fila desde la
+    PWA. Ambas son subconsultas: con decenas de conversaciones es barato y
+    no deja filas duplicadas por un JOIN.
+    """
     with session() as conn:
         rows = conn.execute(
-            "SELECT id, title, created_at, updated_at FROM conversations "
-            "ORDER BY updated_at DESC LIMIT ?",
+            "SELECT c.id, c.title, c.created_at, c.updated_at, "
+            "  (SELECT COUNT(*) FROM messages m "
+            "     WHERE m.conversation_id = c.id) AS message_count, "
+            "  (SELECT m.content FROM messages m "
+            "     WHERE m.conversation_id = c.id AND m.role = 'user' "
+            "     ORDER BY m.id DESC LIMIT 1) AS preview "
+            "FROM conversations c "
+            "ORDER BY c.updated_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        preview = (item.get("preview") or "").strip()
+        item["preview"] = " ".join(preview.split())[:120]
+        items.append(item)
+    return items
 
 
 def delete_conversation(conv_id: str) -> bool:
@@ -80,13 +99,14 @@ def add_message(
     tool_ok: bool | None = None,
     tool_duration_ms: int | None = None,
     tool_summary: str | None = None,
+    interrupted: bool = False,
 ) -> None:
     with session() as conn:
         conn.execute(
             "INSERT INTO messages "
             "(conversation_id, role, content, tool_calls, tool_call_id, name, "
-            " tool_ok, tool_duration_ms, tool_summary, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " tool_ok, tool_duration_ms, tool_summary, interrupted, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 conv_id,
                 role,
@@ -97,6 +117,7 @@ def add_message(
                 None if tool_ok is None else int(bool(tool_ok)),
                 tool_duration_ms,
                 tool_summary,
+                int(bool(interrupted)),
                 _now(),
             ),
         )
@@ -112,7 +133,7 @@ def get_timeline(conv_id: str) -> list[dict]:
     """
     query = (
         "SELECT id, role, content, tool_calls, tool_call_id, name, "
-        "tool_ok, tool_duration_ms, tool_summary, created_at "
+        "tool_ok, tool_duration_ms, tool_summary, interrupted, created_at "
         "FROM messages WHERE conversation_id=? ORDER BY id"
     )
     with session() as conn:
@@ -135,6 +156,8 @@ def get_timeline(conv_id: str) -> list[dict]:
             item["tool_duration_ms"] = row["tool_duration_ms"]
         if row["tool_summary"]:
             item["tool_summary"] = row["tool_summary"]
+        if row["interrupted"]:
+            item["interrupted"] = True
         items.append(item)
     return items
 
