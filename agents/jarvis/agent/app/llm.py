@@ -36,6 +36,22 @@ NETWORK = "network"
 BAD_REQUEST = "bad_request"
 
 
+# Modelo forzado para una medición (banco de pruebas). Se aísla por
+# petición con un ContextVar —igual que STREAM_EMIT— para que dos turnos
+# simultáneos no se pisen. Vacío = cadena normal con fallback.
+MODEL_OVERRIDE: contextvars.ContextVar[tuple[str, ...] | None] = (
+    contextvars.ContextVar("jarvis_model_override", default=None)
+)
+
+
+def current_chain() -> list[str]:
+    """Cadena de modelos del turno: la forzada (medición) o la configurada."""
+    override = MODEL_OVERRIDE.get()
+    if override:
+        return list(override)
+    return get_settings().llm_model_chain
+
+
 class LLMError(RuntimeError):
     def __init__(
         self,
@@ -194,7 +210,7 @@ async def chat_completion(
     if not settings.llm_configured:
         raise LLMError("No hay JARVIS_LLM_API_KEY configurada", AUTH)
 
-    chain = settings.llm_model_chain
+    chain = current_chain()
     if not chain:
         raise LLMError("No hay modelos configurados", AUTH)
 
@@ -382,7 +398,7 @@ async def chat_completion_stream(
     if not settings.llm_configured:
         raise LLMError("No hay JARVIS_LLM_API_KEY configurada", AUTH)
 
-    chain = settings.llm_model_chain
+    chain = current_chain()
     if not chain:
         raise LLMError("No hay modelos configurados", AUTH)
 

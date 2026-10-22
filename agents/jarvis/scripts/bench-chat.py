@@ -56,15 +56,21 @@ class Medicion:
     tokens: int = 0
     herramientas: int = 0
     caracteres: int = 0
+    # Tokens transmitidos antes de la respuesta final (narración previa a
+    # una herramienta). No es un fallo: se informa.
+    narracion: int = 0
     modelo: str | None = None
     conversacion: str | None = None
 
 
 class Cliente:
-    def __init__(self, base: str, password: str, timeout: float) -> None:
+    def __init__(
+        self, base: str, password: str, timeout: float, model: str | None = None
+    ) -> None:
         self.base = base.rstrip("/")
         self.password = password
         self.timeout = timeout
+        self.model = model
         self.cookie = ""
         self.csrf = ""
 
@@ -104,6 +110,21 @@ class Cliente:
         if not self.cookie:
             raise SystemExit("login no devolvió cookie de sesión")
 
+    def modelos(self) -> list[str]:
+        """Cadena configurada en el servidor (para saber qué acepta --model).
+
+        Es informativo: si el servidor es viejo y no tiene la ruta, se
+        devuelve una lista vacía y el banco sigue como siempre.
+        """
+        peticion = urllib.request.Request(
+            f"{self.base}/api/llm/status", headers=self._cabeceras()
+        )
+        try:
+            with urllib.request.urlopen(peticion, timeout=self.timeout) as respuesta:
+                return list(json.loads(respuesta.read() or b"{}").get("models") or [])
+        except (urllib.error.HTTPError, OSError, ValueError):
+            return []
+
     def borrar_conversacion(self, conv_id: str) -> bool:
         peticion = urllib.request.Request(
             f"{self.base}/api/conversations/{conv_id}",
@@ -119,9 +140,12 @@ class Cliente:
     def medir(self, caso: str, mensaje: str, espera_herramientas: bool) -> Medicion:
         m = Medicion(caso=caso)
         inicio = time.monotonic()
+        cuerpo: dict = {"message": mensaje, "conversation_id": None}
+        if self.model:
+            cuerpo["model"] = self.model
         peticion = urllib.request.Request(
             f"{self.base}/api/chat/stream",
-            data=json.dumps({"message": mensaje, "conversation_id": None}).encode(),
+            data=json.dumps(cuerpo).encode(),
             headers=self._cabeceras(),
             method="POST",
         )
@@ -185,14 +209,27 @@ class Cliente:
             m.problemas.append("no llegó ni un token")
         if cierre:
             respuesta_final = (cierre.get("reply") or "").strip()
+            transmitido = texto.strip()
             if not respuesta_final:
                 m.ok = False
                 m.problemas.append("respuesta final vacía")
-            # El texto del stream debe estar contenido en la respuesta
-            # persistida (puede haber párrafos extra del cierre).
-            if texto.strip() and texto.strip() not in respuesta_final:
-                m.ok = False
-                m.problemas.append("el stream y la respuesta persistida no coinciden")
+            elif transmitido:
+                # El cierre lleva SOLO el texto final del turno. Si el modelo
+                # habló antes de llamar a una herramienta, esos tokens se
+                # transmitieron y se guardan como mensaje aparte: lo correcto
+                # es que la respuesta final CIERRE el stream. La otra
+                # dirección (el stream cabe en la respuesta) es el nodo de
+                # límite, que añade texto que no pasó por el stream.
+                if transmitido.endswith(respuesta_final):
+                    m.narracion = len(transmitido) - len(respuesta_final)
+                elif transmitido in respuesta_final:
+                    pass
+                else:
+                    m.ok = False
+                    m.problemas.append(
+                        "el stream y la respuesta persistida no coinciden "
+                        f"({len(transmitido)} vs {len(respuesta_final)} caracteres)"
+                    )
         if espera_herramientas and m.herramientas == 0:
             m.ok = False
             m.problemas.append("no usó ninguna herramienta (se esperaba al menos una)")
@@ -246,6 +283,14 @@ def main() -> int:
         default="simple,estado,contenedores",
         help="lista separada por comas: simple,estado,contenedores",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "fuerza un modelo de la cadena configurada (sin fallback). "
+            "Para comparar latencias sin tocar el .env"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="salida JSON")
     parser.add_argument(
         "--no-cleanup", action="store_true", help="no borrar las conversaciones creadas"
@@ -268,13 +313,31 @@ def main() -> int:
         print(f"no hay casos válidos en {pedidos}", file=sys.stderr)
         return 2
 
-    cliente = Cliente(args.url, password, args.timeout)
+    cliente = Cliente(args.url, password, args.timeout, args.model)
     cliente.login()
+
+    # Solo se pueden medir modelos de la cadena configurada. Enseñarla
+    # evita adivinar nombres y chocar con el 400 del servidor.
+    cadena = cliente.modelos()
+    if cadena and not args.json:
+        print("modelos de la cadena: " + ", ".join(cadena))
+    if args.model and cadena and args.model not in cadena:
+        print(
+            f"«{args.model}» no está en la cadena del servidor. Elige uno de:\n  "
+            + "\n  ".join(cadena),
+            file=sys.stderr,
+        )
+        return 2
 
     mediciones: list[Medicion] = []
     for _ in range(max(1, args.loop)):
         for caso, mensaje, espera in seleccion:
             m = cliente.medir(caso, mensaje, espera)
+            # Con modelo forzado, la medición es mentira si el servidor usó
+            # otro (por ejemplo, si el fallback se activó a espaldas del banco).
+            if args.model and m.modelo and m.modelo != args.model:
+                m.ok = False
+                m.problemas.append(f"usó {m.modelo} en vez de {args.model}")
             mediciones.append(m)
             if m.conversacion and not args.no_cleanup:
                 # El banco no deja rastro en el historial del usuario.
@@ -294,6 +357,7 @@ def main() -> int:
                         "tokens": m.tokens,
                         "herramientas": m.herramientas,
                         "caracteres": m.caracteres,
+                        "narracion": m.narracion,
                         "modelo": m.modelo,
                     }
                     for m in mediciones
@@ -303,6 +367,8 @@ def main() -> int:
             )
         )
     else:
+        if args.model:
+            print(f"modelo forzado: {args.model}\n")
         print(
             f"{'caso':<14} {'1er ev.':>8} {'1er tok.':>9} {'total':>8} "
             f"{'tok':>4} {'herr':>5} {'chars':>6}  resultado"
@@ -316,6 +382,16 @@ def main() -> int:
                 f"{m.ms_primer_token or 0:>8}ms {m.ms_total or 0:>7}ms "
                 f"{m.tokens:>4} {m.herramientas:>5} {m.caracteres:>6}  {marca}{detalle}"
             )
+
+        narradores = [m for m in mediciones if m.narracion]
+        if narradores:
+            print()
+            print(
+                f"{len(narradores)} turno(s) hablaron antes de usar una "
+                "herramienta (no es un fallo; se guarda como mensaje aparte):"
+            )
+            for m in narradores:
+                print(f"  {m.caso}: {m.narracion} caracteres antes de la respuesta final")
 
         if args.loop > 1:
             print()

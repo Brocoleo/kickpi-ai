@@ -111,7 +111,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.9
+    image: jarvis-agent:0.10
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:

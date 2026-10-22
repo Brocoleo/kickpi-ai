@@ -220,3 +220,60 @@ def test_stream_sse_persiste_y_emite_eventos(browser, monkeypatch) -> None:
     assert payload["elapsed_ms"] >= 0
     assert payload["tools_count"] >= 1
     assert payload["model"]
+
+
+def test_stream_fuerza_el_modelo_pedido(browser, monkeypatch) -> None:
+    """`model` acota la cadena a ese modelo: la medición no puede mentir."""
+    from app.llm import current_chain
+
+    visto: dict = {}
+
+    class FakeAgent:
+        async def astream(self, state: dict, stream_mode: str = "values"):
+            visto["cadena"] = current_chain()
+            yield {
+                "messages": state["messages"]
+                + [{"role": "assistant", "content": "ok"}],
+                "tool_trace": [],
+                "iterations": 1,
+                "conversation_id": state["conversation_id"],
+                "model_used": visto["cadena"][0],
+            }
+
+    monkeypatch.setattr(main, "AGENT", FakeAgent())
+    elegido = main.get_settings().llm_model_chain[0]
+
+    with browser.stream(
+        "POST", "/api/chat/stream", json={"message": "hola", "model": elegido}
+    ) as response:
+        assert response.status_code == 200
+        list(response.iter_text())
+
+    # Un solo modelo: si falla, falla el turno. Sin fallback silencioso.
+    assert visto["cadena"] == [elegido]
+
+
+def test_rechaza_un_modelo_fuera_de_la_cadena(browser) -> None:
+    for ruta in ("/api/chat", "/api/chat/stream"):
+        resp = browser.post(
+            ruta, json={"message": "hola", "model": "gratis/inventado:free"}
+        )
+        assert resp.status_code == 400, ruta
+        assert "cadena configurada" in resp.text
+
+
+def test_la_cadena_forzada_no_se_filtra_entre_tareas(monkeypatch) -> None:
+    import asyncio
+
+    from app.llm import MODEL_OVERRIDE, current_chain
+
+    normal = main.get_settings().llm_model_chain
+
+    async def dentro() -> list[str]:
+        MODEL_OVERRIDE.set(("forzado/uno",))
+        await asyncio.sleep(0)
+        return current_chain()
+
+    assert asyncio.run(dentro()) == ["forzado/uno"]
+    # Fuera de esa tarea, la cadena vuelve a ser la configurada.
+    assert current_chain() == normal

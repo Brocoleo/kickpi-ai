@@ -34,7 +34,7 @@ from .config import SYSTEM_PROMPT, get_settings
 from .csrf import check_origin, issue_token
 from .db import init_db
 from .graph import AGENT
-from .llm import CIRCUIT, STREAM_EMIT
+from .llm import CIRCUIT, MODEL_OVERRIDE, STREAM_EMIT
 from .security import (
     check_admin_password,
     login_allowed,
@@ -49,7 +49,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 
 @asynccontextmanager
@@ -120,6 +120,10 @@ async def headers_middleware(request: Request, call_next):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: str | None = None
+    # Solo para medir: fuerza un modelo de la cadena, sin fallback. Si no
+    # está en la cadena configurada se rechaza (400): el API no es una
+    # puerta abierta a cualquier modelo.
+    model: str | None = Field(default=None, max_length=120)
 
 
 class ChatResponse(BaseModel):
@@ -628,6 +632,24 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _modelo_forzado(body: ChatRequest) -> tuple[str, ...] | None:
+    """Valida el modelo pedido y lo devuelve como cadena de uno.
+
+    Un solo elemento a propósito: con fallback, una medición de latencia
+    podría estar midiendo otro modelo sin avisar. Si el forzado falla, el
+    turno falla.
+    """
+    if not body.model:
+        return None
+    if body.model not in get_settings().llm_model_chain:
+        raise HTTPException(
+            400,
+            "Ese modelo no está en la cadena configurada "
+            "(JARVIS_LLM_MODEL / JARVIS_LLM_FALLBACK_MODELS)",
+        )
+    return (body.model,)
+
+
 @app.post(
     "/api/chat",
     response_model=ChatResponse,
@@ -635,6 +657,12 @@ def _sse(event: str, payload: dict) -> str:
     dependencies=[Depends(require_auth)],
 )
 async def chat(body: ChatRequest) -> ChatResponse:
+    """Turno completo, sin streaming.
+
+    `model` (opcional) fuerza un único modelo de la cadena configurada, sin
+    fallback (400 si no pertenece): es para medir desde el banco.
+    """
+    override = _modelo_forzado(body)
     conv_id, base_messages = await asyncio.to_thread(_prepare_chat, body)
     state = {
         "messages": base_messages,
@@ -643,7 +671,12 @@ async def chat(body: ChatRequest) -> ChatResponse:
         "conversation_id": conv_id,
     }
 
-    result = await AGENT.ainvoke(state)
+    token_modelo = MODEL_OVERRIDE.set(override) if override else None
+    try:
+        result = await AGENT.ainvoke(state)
+    finally:
+        if token_modelo is not None:
+            MODEL_OVERRIDE.reset(token_modelo)
     reply = await asyncio.to_thread(
         _persist_turn_sync, conv_id, len(base_messages), result
     )
@@ -666,7 +699,14 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
 
     Eventos: `segment` (nueva burbuja), `token` (texto incremental),
     `tool` (herramienta terminada), `done` (turno persistido) y `error`.
+
+    `model` (opcional) fuerza un único modelo de la cadena configurada, sin
+    fallback: es para medir latencias desde el banco. Si no pertenece a la
+    cadena se responde 400 antes de abrir el stream.
     """
+    # Se valida ANTES de abrir el stream: si el modelo no vale, la respuesta
+    # es un 400 normal y no un error a mitad de un SSE ya empezado.
+    override = _modelo_forzado(body)
     conv_id, base_messages = await asyncio.to_thread(_prepare_chat, body)
     state = {
         "messages": base_messages,
@@ -679,6 +719,7 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
         queue: asyncio.Queue = asyncio.Queue()
         final_state: dict | None = None
         started = time.monotonic()
+        token_modelo = MODEL_OVERRIDE.set(override) if override else None
 
         def emit(event: dict) -> None:
             queue.put_nowait(event)
@@ -735,6 +776,8 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                 )
         finally:
             STREAM_EMIT.reset(token)
+            if token_modelo is not None:
+                MODEL_OVERRIDE.reset(token_modelo)
             if not task.done():
                 task.cancel()
 

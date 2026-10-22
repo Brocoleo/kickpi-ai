@@ -203,11 +203,29 @@ cd pwa && npm run test:e2e
 ```bash
 ./scripts/bench-chat.py            # pregunta la contraseña (no se ve)
 ./scripts/bench-chat.py --loop 5   # p50/p95
+./scripts/bench-chat.py --model nvidia/nemotron-3-nano-30b-a3b:free
 ```
 
 Mide tiempo al primer evento, primer token y cierre, cuántas herramientas usó y
 si la respuesta llegó vacía. Falla (exit 1) si el stream no cierra, si no llega
-texto o si el caso esperaba herramientas y no hubo: sirve también en un cron.
+texto, si el caso esperaba herramientas y no hubo, o si lo transmitido y lo
+guardado no cuadran: sirve también en un cron.
+
+Cuando el modelo **habla antes de usar una herramienta** ("voy a revisar…"),
+esos tokens también se transmiten pero se guardan como mensaje aparte, así que
+lo correcto es que la respuesta final **cierre** el stream. El banco lo acepta y
+lo informa al pie ("hablaron antes de usar una herramienta"): no es un fallo,
+es el modelo siendo transparente.
+
+Al entrar, el banco imprime **la cadena de modelos del servidor** (así no hay
+que adivinar nombres) y, si `--model` no está en ella, se detiene antes de medir
+en vez de chocar con el 400 del agente.
+
+`--model` fuerza **un solo** modelo de la cadena configurada (`JARVIS_LLM_MODEL`
+o `JARVIS_LLM_FALLBACK_MODELS`); si le pasas otro, el agente responde 400. Sirve
+para comparar latencias entre modelos gratuitos sin tocar el `.env`: sin
+fallback, el modelo que mides es el que responde, o la medición falla. El banco
+avisa si aun así el servidor usó otro.
 
 La contraseña se pide por el terminal con `getpass` (como sudo: no se muestra y
 no pasa por el historial). Para cron o scripts sigue valiendo
@@ -225,12 +243,6 @@ reciente en Aprobaciones.
 El único caso que habla con el servidor real es `e2e/integrado.spec.ts` (login,
 aprobación, ejecución por SSH y auditoría). Se omite salvo que se le den las
 credenciales por entorno — nunca por archivo:
-
-```bash
-JARVIS_E2E_URL=http://127.0.0.1:8889 JARVIS_E2E_PASSWORD=... \
-  npx playwright test e2e/integrado.spec.ts
-```
-
 
 ```bash
 JARVIS_E2E_URL=http://127.0.0.1:8889 JARVIS_E2E_PASSWORD=... \
@@ -402,6 +414,7 @@ o **token de API**.
 | GET | `/api/auth/me` | Estado de autenticación (+ token CSRF si hay sesión) |
 | POST | `/api/chat` | `{"message": "...", "conversation_id": "..."}` |
 | POST | `/api/chat/stream` | Igual, pero responde **SSE** (`segment`, `token`, `tool`, `done`) |
+| | | Ambas aceptan `"model"` (opcional): fuerza un modelo de la cadena, sin fallback (400 si no pertenece). Es para el banco |
 | GET | `/api/conversations` | Lista de conversaciones |
 | GET | `/api/conversations/{id}` | Mensajes de una conversación (con id, fecha y metadatos de herramientas) |
 | DELETE | `/api/conversations/{id}` | Borra la conversación y sus mensajes (sesión + CSRF) |
