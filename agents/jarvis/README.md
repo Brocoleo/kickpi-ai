@@ -204,6 +204,7 @@ cd pwa && npm run test:e2e
 ./scripts/bench-chat.py            # pregunta la contraseña (no se ve)
 ./scripts/bench-chat.py --loop 5   # p50/p95
 ./scripts/bench-chat.py --model nvidia/nemotron-3-nano-30b-a3b:free
+./scripts/bench-chat.py --comparar --loop 3   # toda la cadena, una contraseña
 ```
 
 Mide tiempo al primer evento, primer token y cierre, cuántas herramientas usó y
@@ -226,6 +227,11 @@ o `JARVIS_LLM_FALLBACK_MODELS`); si le pasas otro, el agente responde 400. Sirve
 para comparar latencias entre modelos gratuitos sin tocar el `.env`: sin
 fallback, el modelo que mides es el que responde, o la medición falla. El banco
 avisa si aun así el servidor usó otro.
+
+`--comparar` mide **todos** los modelos de la cadena en una sola sesión (una
+contraseña) y saca la tabla con la que se decide, con el más rápido al primer
+token señalado al final. Por defecto `simple` mide sólo el tiempo del proveedor
+y `estado` / `contenedores` añaden una herramienta real.
 
 La contraseña se pide por el terminal con `getpass` (como sudo: no se muestra y
 no pasa por el historial). Para cron o scripts sigue valiendo

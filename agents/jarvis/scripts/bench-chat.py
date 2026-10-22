@@ -59,6 +59,9 @@ class Medicion:
     # Tokens transmitidos antes de la respuesta final (narración previa a
     # una herramienta). No es un fallo: se informa.
     narracion: int = 0
+    # El que se pidió (--model / --comparar) y el que respondió, que deberían
+    # coincidir: si no, la medición no vale.
+    modelo_pedido: str | None = None
     modelo: str | None = None
     conversacion: str | None = None
 
@@ -291,6 +294,14 @@ def main() -> int:
             "Para comparar latencias sin tocar el .env"
         ),
     )
+    parser.add_argument(
+        "--comparar",
+        action="store_true",
+        help=(
+            "mide todos los modelos de la cadena, uno tras otro, y saca la "
+            "tabla comparativa. Una sola contraseña para toda la cadena"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="salida JSON")
     parser.add_argument(
         "--no-cleanup", action="store_true", help="no borrar las conversaciones creadas"
@@ -319,7 +330,7 @@ def main() -> int:
     # Solo se pueden medir modelos de la cadena configurada. Enseñarla
     # evita adivinar nombres y chocar con el 400 del servidor.
     cadena = cliente.modelos()
-    if cadena and not args.json:
+    if cadena and not args.json and not args.comparar:
         print("modelos de la cadena: " + ", ".join(cadena))
     if args.model and cadena and args.model not in cadena:
         print(
@@ -329,19 +340,49 @@ def main() -> int:
         )
         return 2
 
+    # Qué se mide: un modelo forzado, todos los de la cadena (--comparar) o
+    # la cadena normal con su fallback (None). En los dos primeros casos el
+    # modelo es el que responde o la medición falla; en el tercero, manda la
+    # política de reserva del agente.
+    if args.comparar:
+        if not cadena:
+            print(
+                "el servidor no informa su cadena: usa --model para medir de uno "
+                "en uno",
+                file=sys.stderr,
+            )
+            return 2
+        objetivos: list[str | None] = list(cadena)
+    elif args.model:
+        objetivos = [args.model]
+    else:
+        objetivos = [None]
+
     mediciones: list[Medicion] = []
-    for _ in range(max(1, args.loop)):
-        for caso, mensaje, espera in seleccion:
-            m = cliente.medir(caso, mensaje, espera)
-            # Con modelo forzado, la medición es mentira si el servidor usó
-            # otro (por ejemplo, si el fallback se activó a espaldas del banco).
-            if args.model and m.modelo and m.modelo != args.model:
-                m.ok = False
-                m.problemas.append(f"usó {m.modelo} en vez de {args.model}")
-            mediciones.append(m)
-            if m.conversacion and not args.no_cleanup:
-                # El banco no deja rastro en el historial del usuario.
-                cliente.borrar_conversacion(m.conversacion)
+    for objetivo in objetivos:
+        cliente.model = objetivo
+        for _ in range(max(1, args.loop)):
+            for caso, mensaje, espera in seleccion:
+                m = cliente.medir(caso, mensaje, espera)
+                m.modelo_pedido = objetivo
+                # Con modelo fijado, la medición es mentira si el servidor usó
+                # otro (por ejemplo, si el fallback se activó a espaldas del
+                # banco).
+                if objetivo and m.modelo and m.modelo != objetivo:
+                    m.ok = False
+                    m.problemas.append(f"usó {m.modelo} en vez de {objetivo}")
+                mediciones.append(m)
+                if m.conversacion and not args.no_cleanup:
+                    # El banco no deja rastro en el historial del usuario.
+                    cliente.borrar_conversacion(m.conversacion)
+                if args.comparar and not args.json:
+                    # Una línea por medición: la comparación tarda minutos y
+                    # conviene ver que avanza.
+                    print(
+                        f"  {objetivo} · {caso}: "
+                        f"{'ok' if m.ok else 'FALLO'} ({m.ms_total or 0}ms)",
+                        file=sys.stderr,
+                    )
 
     if args.json:
         print(
@@ -358,6 +399,7 @@ def main() -> int:
                         "herramientas": m.herramientas,
                         "caracteres": m.caracteres,
                         "narracion": m.narracion,
+                        "modelo_pedido": m.modelo_pedido,
                         "modelo": m.modelo,
                     }
                     for m in mediciones
@@ -366,6 +408,52 @@ def main() -> int:
                 ensure_ascii=False,
             )
         )
+    elif args.comparar:
+        # Una fila por modelo y caso: es la tabla con la que se decide.
+        ancho = max(len(o or "cadena") for o in objetivos)
+        print()
+        print(
+            f"{'modelo':<{ancho}}  {'caso':<14} {'1er tok p50':>11} "
+            f"{'total p50':>9} {'fallos':>6}"
+        )
+        print("-" * (ancho + 46))
+        for objetivo in objetivos:
+            for caso, _, _ in seleccion:
+                grupo = [
+                    m
+                    for m in mediciones
+                    if m.modelo_pedido == objetivo and m.caso == caso
+                ]
+                tokens = [m.ms_primer_token for m in grupo if m.ms_primer_token]
+                totales = [m.ms_total for m in grupo if m.ms_total]
+                fallos = sum(1 for m in grupo if not m.ok)
+                print(
+                    f"{(objetivo or 'cadena'):<{ancho}}  {caso:<14} "
+                    f"{percentil(tokens, 50):>8}ms {percentil(totales, 50):>6}ms "
+                    f"{fallos:>4}/{len(grupo)}"
+                )
+            print()
+
+        narradores = [m for m in mediciones if m.narracion]
+        if narradores:
+            print(
+                f"{len(narradores)} mediciones narraron antes de usar una "
+                "herramienta (no es un fallo)"
+            )
+
+        # El más veloz, para no tener que leer la tabla entera.
+        ranking: list[tuple[int, str]] = []
+        for objetivo in objetivos:
+            grupo = [m for m in mediciones if m.modelo_pedido == objetivo and m.ok]
+            tokens = [m.ms_primer_token for m in grupo if m.ms_primer_token]
+            if tokens:
+                ranking.append((percentil(tokens, 50), objetivo or "cadena"))
+        if ranking:
+            ranking.sort()
+            print(
+                f"\nmás rápido al primer token: {ranking[0][1]} "
+                f"({ranking[0][0]}ms p50)"
+            )
     else:
         if args.model:
             print(f"modelo forzado: {args.model}\n")
