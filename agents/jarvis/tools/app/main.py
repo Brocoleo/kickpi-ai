@@ -8,16 +8,24 @@ import logging
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 
-from . import docker_api, system_api
+from . import docker_api, nas_index, system_api
 from .config import get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-tools")
 
+# Índice perezoso de la NAS: se construye en segundo plano al arrancar y se
+# refresca solo. Ninguna consulta bloquea más de unos segundos.
+_INDEX = nas_index.IndiceNAS(
+    get_settings().nas_root,
+    max_files=get_settings().nas_max_files,
+    refresh_s=get_settings().nas_refresh_s,
+)
+
 app = FastAPI(
     title="Jarvis Tools",
-    version="0.1.0",
-    description="Operaciones de solo lectura sobre el sistema y Docker.",
+    version="0.2.0",
+    description="Operaciones de solo lectura sobre el sistema, Docker y la NAS.",
 )
 
 
@@ -37,7 +45,7 @@ async def require_token(
 @app.get("/health", tags=["meta"])
 def health() -> dict:
     """Sin autenticación: solo indica que el proceso responde."""
-    return {"status": "ok", "service": "jarvis-tools", "version": "0.1.0"}
+    return {"status": "ok", "service": "jarvis-tools", "version": "0.2.0"}
 
 
 @app.get("/ops", tags=["meta"], dependencies=[Depends(require_token)])
@@ -51,6 +59,9 @@ def list_ops() -> dict:
             "GET /docker/ps",
             "GET /docker/logs/{name}",
             "GET /docker/stats/{name}",
+            "GET /nas/search",
+            "GET /nas/recent",
+            "GET /nas/status",
         ],
         "denied": [
             "start/stop/restart de contenedores",
@@ -89,9 +100,40 @@ def docker_stats(name: str) -> dict:
     return docker_api.container_stats(name)
 
 
+@app.get("/nas/search", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_search(
+    q: str = Query(min_length=1, max_length=200, description="Texto a buscar"),
+    content: bool = Query(default=True, description="Buscar también dentro de archivos de texto"),
+    limit: int = Query(default=10, ge=1, le=50),
+) -> dict:
+    """Busca archivos por nombre, ruta o contenido (insensible a acentos)."""
+    return _INDEX.buscar(q, limite=limit, contenido=content)
+
+
+@app.get("/nas/recent", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_recent(
+    limit: int = Query(default=10, ge=1, le=50),
+    path: str = Query(default="", max_length=300, description="Subcarpeta opcional"),
+) -> dict:
+    """Últimos archivos modificados, opcionalmente bajo una subcarpeta."""
+    return _INDEX.recientes(limite=limit, bajo=path)
+
+
+@app.get("/nas/status", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_status() -> dict:
+    """Estado del índice: archivos vistos, tamaño, antigüedad y errores."""
+    return _INDEX.estado()
+
+
 @app.on_event("startup")
 def _startup() -> None:
     settings = get_settings()
     if not settings.tools_token:
         log.warning("JARVIS_TOOLS_TOKEN vacío: todos los endpoints protegidos darán 503")
-    log.info("Jarvis Tools listo (docker_host=%s)", settings.docker_host)
+    # Arranca el recorrido sin bloquear el arranque del contenedor.
+    _INDEX.asegurar(0.0)
+    log.info(
+        "Jarvis Tools listo (docker_host=%s, nas_root=%s)",
+        settings.docker_host,
+        settings.nas_root,
+    )

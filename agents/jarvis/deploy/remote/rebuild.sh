@@ -10,7 +10,7 @@
 # terminaba en falso: `docker compose up -d` vuelve en cuanto el contenedor
 # arranca, pero el healthcheck aún dice "starting".
 #
-# Uso: sudo bash deploy/remote/rebuild.sh agente [ejecutor]
+# Uso: sudo bash deploy/remote/rebuild.sh agente [ejecutor|herramientas]
 # =============================================================================
 set -euo pipefail
 
@@ -22,8 +22,9 @@ for arg in "$@"; do
   case "$arg" in
     agente) SERVICIOS+=(jarvis-agent) ;;
     ejecutor) SERVICIOS+=(jarvis-executor) ;;
+    herramientas) SERVICIOS+=(jarvis-tools) ;;
     *)
-      echo "servicio desconocido: $arg (usa agente / ejecutor)" >&2
+      echo "servicio desconocido: $arg (usa agente / ejecutor / herramientas)" >&2
       exit 2
       ;;
   esac

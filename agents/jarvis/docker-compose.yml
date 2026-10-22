@@ -38,7 +38,7 @@ services:
 
   jarvis-tools:
     build: ./tools
-    image: jarvis-tools:0.1
+    image: jarvis-tools:0.2
     container_name: jarvis-tools
     restart: unless-stopped
     depends_on:
@@ -49,8 +49,12 @@ services:
       # Se habla con el proxy, no con el socket. El proxy filtra por ACL.
       JARVIS_DOCKER_HOST: tcp://docker-socket-proxy:2375
       JARVIS_DOCKER_API_VERSION: "1.45"
+      # Índice de búsqueda del chat. Solo lectura: este servicio no escribe.
+      JARVIS_NAS_ROOT: /mnt/data/nas
+      JARVIS_NAS_MAX_FILES: ${JARVIS_NAS_MAX_FILES:-300000}
     volumes:
       - /proc/device-tree/model:/etc/board-model:ro
+      - /mnt/data/nas:/mnt/data/nas:ro
     expose:
       - "8000"
     networks:
@@ -111,7 +115,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.11.0
+    image: jarvis-agent:0.12.0
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:
@@ -128,8 +132,8 @@ services:
       JARVIS_FILEBROWSER_URL: http://filebrowser:8080
       JARVIS_LLM_BASE_URL: ${JARVIS_LLM_BASE_URL:-https://openrouter.ai/api/v1}
       JARVIS_LLM_API_KEY: ${JARVIS_LLM_API_KEY:-}
-      JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
-      JARVIS_LLM_FALLBACK_MODELS: "${JARVIS_LLM_FALLBACK_MODELS:-minimax/minimax-m3.1-flash:free,google/gemma-4-26b-a4b-it:free,openrouter/free}"
+      JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-nvidia/nemotron-3.5-lightning:free}
+      JARVIS_LLM_FALLBACK_MODELS: "${JARVIS_LLM_FALLBACK_MODELS:-nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-26b-a4b-it:free,openrouter/free}"
       JARVIS_MAX_TOOL_ITERATIONS: ${JARVIS_MAX_TOOL_ITERATIONS:-10}
       JARVIS_ADMIN_PASSWORD_HASH: ${JARVIS_ADMIN_PASSWORD_HASH:-}
       JARVIS_SESSION_TTL_DAYS: ${JARVIS_SESSION_TTL_DAYS:-30}

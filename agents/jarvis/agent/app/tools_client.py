@@ -65,6 +65,65 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "nas_search",
+            "description": (
+                "Busca archivos en la NAS por nombre, ruta o CONTENIDO de "
+                "texto (insensible a mayúsculas y acentos). Úsala para "
+                "«¿dónde está la factura de…?», «busca lo que hablé de…». "
+                "Devuelve ruta, tamaño, fecha y, si coincide dentro de un "
+                "archivo, un fragmento de contexto."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Palabras a buscar (2 o más)",
+                    },
+                    "content": {
+                        "type": "boolean",
+                        "description": (
+                            "Buscar también dentro de archivos de texto "
+                            "(por defecto true). Desactívalo para ir más rápido."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Máximo de resultados (1-50, por defecto 10)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "nas_recent",
+            "description": (
+                "Últimos archivos modificados en la NAS, opcionalmente bajo "
+                "una subcarpeta. Para «¿qué llegó hoy?» o «¿qué hay de nuevo "
+                "en Descargas?»."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Máximo de archivos (1-50, por defecto 10)",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Subcarpeta dentro de la NAS (opcional)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 _ENDPOINTS = {
@@ -72,6 +131,8 @@ _ENDPOINTS = {
     "disk_usage": "/disk/usage",
     "docker_ps": "/docker/ps",
     "container_logs": "/docker/logs/{name}",
+    "nas_search": "/nas/search",
+    "nas_recent": "/nas/recent",
 }
 
 
@@ -92,6 +153,17 @@ async def call_tool(name: str, arguments: dict | None = None) -> dict:
         params["tail"] = arguments["tail"]
     elif name == "docker_ps" and "all" in arguments:
         params["all"] = arguments["all"]
+    elif name == "nas_search":
+        params["q"] = arguments.get("query", "")
+        if "content" in arguments:
+            params["content"] = arguments["content"]
+        if "limit" in arguments:
+            params["limit"] = arguments["limit"]
+    elif name == "nas_recent":
+        if "limit" in arguments:
+            params["limit"] = arguments["limit"]
+        if arguments.get("path"):
+            params["path"] = arguments["path"]
 
     settings = get_settings()
     headers = {"X-Tools-Token": settings.tools_token}

@@ -16,6 +16,7 @@
 #   ./deploy-all.sh --agent       solo el agente
 #   ./deploy-all.sh --executor    solo el ejecutor
 #   ./deploy-all.sh --pwa         solo la PWA (no necesita sudo)
+#   ./deploy-all.sh --tools       solo jarvis-tools (índice NAS, lecturas)
 #   ./deploy-all.sh --check       solo verifica, sin tocar nada (no usa sudo)
 #   ./deploy-all.sh --test        tests del agente + PWA y luego --full
 #
@@ -80,6 +81,11 @@ sincronizar_codigo() {
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/executor/app/" "$BOARD:$REMOTE_DIR/executor/app/"
   rsync -az -e "$RSYNC_SSH" \
+    "$HERE/tools/app/" "$BOARD:$REMOTE_DIR/tools/app/"
+  rsync -az -e "$RSYNC_SSH" \
+    "$HERE/tools/Dockerfile" "$HERE/tools/requirements.txt" \
+    "$BOARD:$REMOTE_DIR/tools/"
+  rsync -az -e "$RSYNC_SSH" \
     "$HERE/deploy/remote/" "$BOARD:$REMOTE_DIR/deploy/remote/"
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/docker-compose.yml" "$BOARD:$REMOTE_DIR/docker-compose.yml"
@@ -97,7 +103,8 @@ reconstruir() {
 
 reconstruir_agente() { reconstruir "agente" "reconstruyendo jarvis-agent"; }
 reconstruir_ejecutor() { reconstruir "ejecutor" "reconstruyendo jarvis-executor"; }
-reconstruir_ambos() { reconstruir "agente ejecutor" "2/4 reconstruyendo agente + ejecutor"; }
+reconstruir_herramientas() { reconstruir "herramientas" "reconstruyendo jarvis-tools"; }
+reconstruir_ambos() { reconstruir "agente ejecutor herramientas" "2/4 reconstruyendo agente + ejecutor + tools"; }
 
 deploy_pwa() {
   paso "3/4 compilando y publicando la PWA"
@@ -192,7 +199,15 @@ case "${1:-}" in
   --agent)
     sincronizar_codigo
     reconstruir_agente
+    # El agente y su PWA se publican juntos: desplegar solo el backend dejó
+    # una vez la interfaz vieja servida sin que nadie lo notara.
+    deploy_pwa
     verificar && verde "✔ desplegado y verificado"
+    ;;
+  --tools)
+    sincronizar_codigo
+    reconstruir_herramientas
+    verificar && verde "✔ herramientas desplegadas y verificadas"
     ;;
   --executor)
     sincronizar_codigo

@@ -353,6 +353,9 @@ Seis secciones: **Chat**, **Métricas**, **Equipos**, **Archivos**,
   el texto parcial y lo marca como *interrumpido* (también si se cae la red).
 - La herramienta que está trabajando se muestra **en vivo** dentro de la
   burbuja («usando `disk_usage`…»), no solo al terminar.
+- **Búsqueda en la NAS desde el chat**: «¿dónde está la factura de Orange?»
+  usa el índice del servidor (nombre, ruta y contenido), sin recorrer el
+  disco en cada pregunta.
 - Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
   contenedores; refresco cada 10 s.
 - Equipos muestra el estado de los equipos remotos (y solo eso).
@@ -406,6 +409,23 @@ PWA ──▶ /api/aprobaciones (agente: sesión humana + Origin + CSRF)
 | `disk_usage` | Uso de disco de `/`, `/mnt/data`, `/data` |
 | `docker_ps` | Contenedores: estado, salud, puertos, imagen |
 | `container_logs` | Últimas N líneas, saneadas (secretos redactados, tamaño acotado) |
+| `nas_search` | Busca en la NAS por nombre, ruta o contenido de texto (sin acentos/mayúsculas) |
+| `nas_recent` | Archivos modificados más recientemente, con subcarpeta opcional |
+
+### Búsqueda en el NAS
+
+`jarvis-tools` monta `/mnt/data/nas` en **solo lectura** y mantiene un índice
+en memoria (nombre, ruta, tamaño, fecha). Se construye en segundo plano al
+arrancar y se refresca cada 15 minutos; una búsqueda nunca espera un
+reescaneo completo. El contenido de archivos de texto (`.md`, `.txt`, `.log`,
+`.csv`, `.json`…) se busca bajo demanda con presupuesto de tiempo.
+
+- Insensible a mayúsculas y acentos: «reunión» encuentra `reunion.md`.
+- Tope de 300 000 archivos (`JARVIS_NAS_MAX_FILES`) para no agotar la RAM;
+  si se alcanza, la respuesta lo indica (`truncated_index`).
+- Directorios de ruido (`.git`, `node_modules`, `@eaDir`, papelera) se omiten.
+- La escritura sigue siendo imposible desde el agente: subir o borrar se hace
+  desde la pestaña **Archivos**.
 
 ## Fallback de modelos (disponibilidad sin coste)
 
