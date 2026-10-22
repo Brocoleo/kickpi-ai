@@ -149,6 +149,15 @@ async function mockBackend(page: Page, backend: Backend = {}): Promise<void> {
       return json({ ok: true, stopped: true });
     }
 
+    if (ruta === "/files/upload" && peticion.method() === "POST") {
+      return json({
+        ok: true,
+        path: "Entrada/20261022-1200-abcd-adjunto.txt",
+        name: "adjunto.txt",
+        size: 8,
+      });
+    }
+
     if (ruta === "/conversations") {
       return json(
         backend.historial
@@ -322,6 +331,41 @@ test("un turno detenido se marca como interrumpido", async ({ page }) => {
 
   await expect(page.getByText("Estoy mirando")).toBeVisible();
   await expect(page.getByText("interrumpido")).toBeVisible();
+});
+
+test("adjunta un archivo y la ruta viaja en el mensaje", async ({ page }) => {
+  await mockBackend(page, {
+    stream: sse([
+      ["meta", { conversation_id: "c1" }],
+      ["segment", {}],
+      ["token", { text: "Recibido." }],
+      [
+        "done",
+        {
+          conversation_id: "c1",
+          reply: "Recibido.",
+          tool_trace: [],
+          model: null,
+        },
+      ],
+    ]),
+  });
+
+  await page.goto("/");
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "adjunto.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("contenido"),
+  });
+
+  await expect(page.locator(".attach-chip")).toContainText("adjunto.txt");
+  await page.getByRole("button", { name: "Enviar mensaje" }).click();
+
+  // El mensaje visible (y el que recibe el modelo) cita la ruta exacta.
+  await expect(
+    page.getByText(/Adjunto en la NAS: Entrada\/20261022-1200-abcd-adjunto\.txt/),
+  ).toBeVisible();
+  await expect(page.getByText("Recibido.")).toBeVisible();
 });
 
 test("exporta la conversación a Markdown", async ({ page }) => {

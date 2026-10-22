@@ -80,6 +80,14 @@ export type ChatStreamDone = {
   interrupted?: boolean;
 };
 
+export type UploadResult = {
+  ok: boolean;
+  /** Ruta relativa dentro del NAS, p. ej. "Entrada/2026...-foto.jpg". */
+  path: string;
+  name: string;
+  size: number;
+};
+
 export type ChatStreamHandlers = {
   /** Id de la conversación, antes de cualquier token (permite detener). */
   onMeta: (conversationId: string) => void;
@@ -268,6 +276,32 @@ export const api = {
       duration_ms: number | null;
       error: string | null;
     }>(`/aprobaciones/${encodeURIComponent(id)}/ejecutar`, undefined, csrfToken),
+
+  /** Sube un adjunto del chat a la carpeta Entrada del NAS (sesión + CSRF). */
+  uploadFile: async (file: File, csrfToken: string | null): Promise<UploadResult> => {
+    const form = new FormData();
+    form.append("file", file);
+    // No se usa `request()`: con FormData el navegador debe poner el
+    // Content-Type con el boundary; fijarlo a mano rompe la subida.
+    const res = await fetch("/api/files/upload", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+      body: form,
+    });
+    if (!res.ok) {
+      let detail = res.statusText || `HTTP ${res.status}`;
+      try {
+        const data = (await res.json()) as { detail?: unknown };
+        if (typeof data.detail === "string") detail = data.detail;
+      } catch {
+        /* body no JSON */
+      }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as UploadResult;
+  },
 
   /** Detiene el turno en curso. Idempotente: `stopped=false` si ya cerró. */
   stopChat: (conversationId: string) =>

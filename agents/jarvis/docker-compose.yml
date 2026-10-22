@@ -143,6 +143,9 @@ services:
       # PWA servida desde el host: actualizar el build es `rsync` y listo,
       # sin reconstruir la imagen del agente.
       - ./agent/static:/app/static:ro
+      # Única carpeta del NAS con escritura para el agente: adjuntos del
+      # chat. El resto de /mnt/data/nas no está montado aquí.
+      - /mnt/data/nas/files/Entrada:/mnt/data/nas/files/Entrada
     ports:
       - "127.0.0.1:8888:8000"
     networks:

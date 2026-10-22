@@ -356,6 +356,9 @@ Seis secciones: **Chat**, **Métricas**, **Equipos**, **Archivos**,
 - **Búsqueda en la NAS desde el chat**: «¿dónde está la factura de Orange?»
   usa el índice del servidor (nombre, ruta y contenido), sin recorrer el
   disco en cada pregunta.
+- **Adjuntos**: el clip del chat sube el archivo a `Entrada/` del NAS y el
+  mensaje cita la ruta exacta, para que Jarvis pueda encontrarlo después.
+  Límite 50 MB; requiere sesión + CSRF (un token de API no puede subir).
 - Métricas en vivo (CPU, RAM, temperatura, discos, carga, uptime) y
   contenedores; refresco cada 10 s.
 - Equipos muestra el estado de los equipos remotos (y solo eso).
@@ -412,6 +415,17 @@ PWA ──▶ /api/aprobaciones (agente: sesión humana + Origin + CSRF)
 | `nas_search` | Busca en la NAS por nombre, ruta o contenido de texto (sin acentos/mayúsculas) |
 | `nas_recent` | Archivos modificados más recientemente, con subcarpeta opcional |
 
+### Adjuntos del chat
+
+El contenedor del agente monta **solo** `/mnt/data/nas/files/Entrada` con
+escritura; el resto del NAS no existe para él. Al adjuntar desde el clip:
+
+1. La PWA sube el archivo (`POST /api/files/upload`) con la sesión y el CSRF.
+2. El servidor lo guarda con prefijo `AAAAMMDD-HHMMSS-xxxx-` (sin pisar
+   nombres repetidos), le pone dueño `1000:1000` y responde la ruta relativa.
+3. El mensaje añade `📎 Adjunto en la NAS: Entrada/...`, de modo que el modelo
+   puede localizarlo con `nas_search` y el usuario con la pestaña Archivos.
+
 ### Búsqueda en el NAS
 
 `jarvis-tools` monta `/mnt/data/nas` en **solo lectura** y mantiene un índice
@@ -467,6 +481,7 @@ o **token de API**.
 | POST | `/api/chat/stream` | Igual, pero responde **SSE** (`meta`, `segment`, `token`, `tool_start`, `tool`, `done`, `error`) |
 | | | Ambas aceptan `"model"` (opcional): fuerza un modelo de la cadena, sin fallback (400 si no pertenece). Es para el banco |
 | POST | `/api/chat/stop` | `{"conversation_id": "..."}` detiene el turno en curso; el parcial se guarda marcado `interrupted` |
+| POST | `/api/files/upload` | Multipart `file`: lo guarda en `Entrada/` del NAS (sesión + CSRF, 50 MB) |
 | GET | `/api/conversations` | Lista de conversaciones (título, vista previa, nº de mensajes) |
 | GET | `/api/conversations/{id}` | Mensajes de una conversación (con id, fecha y metadatos de herramientas) |
 | DELETE | `/api/conversations/{id}` | Borra la conversación y sus mensajes (sesión + CSRF) |

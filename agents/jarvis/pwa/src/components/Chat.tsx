@@ -1,11 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { ApiError, api } from "../api";
 import { shortModel } from "../lib/format";
 import { RichText } from "../lib/markdown";
-import type { Conversation, StoredMessage, ToolCall, ToolTrace } from "../types";
+import type {
+  Conversation,
+  StoredMessage,
+  ToolCall,
+  ToolTrace,
+} from "../types";
+import type { UploadResult } from "../api";
 import {
   HistoryIcon,
+  PaperclipIcon,
   PlusIcon,
+  RefreshIcon,
   SendIcon,
   TrashIcon,
   XIcon,
@@ -178,6 +193,13 @@ function hora(iso?: string): string | null {
   return fecha.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Tamaño legible para el chip del adjunto. */
+function peso(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** Fecha compacta para la lista de conversaciones. */
 function fechaLista(iso: string): string {
   const fecha = new Date(iso);
@@ -288,6 +310,12 @@ export function Chat({
   // Herramienta ejecutándose AHORA (evento tool_start): se muestra en vivo
   // dentro de la burbuja, no como un paso ya terminado.
   const [liveTool, setLiveTool] = useState<string | null>(null);
+  // Adjunto del chat: ya subido a Entrada/ del NAS. Se menciona la ruta en el
+  // mensaje para que el modelo pueda buscarlo con nas_search.
+  const [attachment, setAttachment] = useState<UploadResult | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -436,12 +464,17 @@ export function Chat({
   }
 
   async function send(text?: string) {
-    const content = (text ?? input).trim();
-    if (!content || sending) return;
+    const notaAdjunto = attachment
+      ? `\n\n📎 Adjunto en la NAS: ${attachment.path}`
+      : "";
+    const content = (text ?? `${input}${notaAdjunto}`).trim();
+    if (!content || sending || uploading) return;
 
     historial.current = [...historial.current, content].slice(-50);
     setIndiceHistorial(-1);
     setInput("");
+    setAttachment(null);
+    setUploadError(null);
     setAwaitingReply(false);
     pegadoAbajo.current = true;
     setMessages((prev) => [
@@ -652,6 +685,28 @@ export function Chat({
    * el texto parcial y la conversación queda coherente). Si aún no hay id de
    * conversación —no debería, llega en `meta`— se corta la conexión.
    */
+  async function attachFile(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      setUploadError("Máximo 50 MB por archivo");
+      return;
+    }
+    setUploadError(null);
+    setUploading(true);
+    try {
+      setAttachment(await api.uploadFile(file, csrfToken));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) onUnauthorized();
+      setUploadError(
+        err instanceof Error ? err.message : "No se pudo subir el archivo",
+      );
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function stopTurn(): Promise<void> {
     const id = conversationId;
     if (!id) {
@@ -679,6 +734,8 @@ export function Chat({
     setConversationId(null);
     setAwaitingReply(false);
     setLiveTool(null);
+    setAttachment(null);
+    setUploadError(null);
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(STORAGE_KEY);
     setInput("");
@@ -1111,6 +1168,42 @@ export function Chat({
           void send();
         }}
       >
+        {attachment && (
+          <div className="attach-chip">
+            <PaperclipIcon />
+            <span className="attach-name" title={attachment.path}>
+              {attachment.name}
+            </span>
+            <span className="attach-where">{peso(attachment.size)}</span>
+            <button
+              type="button"
+              className="attach-remove"
+              aria-label="Quitar adjunto"
+              onClick={() => setAttachment(null)}
+              disabled={sending}
+            >
+              <XIcon />
+            </button>
+          </div>
+        )}
+        {uploadError && <div className="attach-error">{uploadError}</div>}
+        <input
+          ref={fileRef}
+          className="attach-input"
+          type="file"
+          aria-label="Archivo para adjuntar"
+          onChange={(event) => void attachFile(event)}
+          disabled={sending || uploading}
+        />
+        <button
+          type="button"
+          className="icon-btn attach-btn"
+          aria-label="Adjuntar archivo"
+          onClick={() => fileRef.current?.click()}
+          disabled={sending || uploading}
+        >
+          {uploading ? <RefreshIcon className="spin-icon" /> : <PaperclipIcon />}
+        </button>
         <textarea
           ref={textareaRef}
           rows={1}
@@ -1151,7 +1244,7 @@ export function Chat({
           <button
             className="send-btn"
             type="submit"
-            disabled={!input.trim()}
+            disabled={(!input.trim() && !attachment) || uploading}
             aria-label="Enviar mensaje"
           >
             <SendIcon />

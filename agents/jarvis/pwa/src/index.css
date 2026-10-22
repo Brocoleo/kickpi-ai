@@ -1145,6 +1145,7 @@ code {
 
 .composer {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 9px;
   padding: 10px 14px;
@@ -1175,6 +1176,86 @@ code {
 
 .composer textarea:disabled {
   opacity: 0.6;
+}
+
+/* --- adjuntos del chat ------------------------------------------------- */
+.attach-input {
+  display: none;
+}
+
+.attach-btn {
+  flex: none;
+  margin-bottom: 3px;
+}
+
+.attach-btn:disabled {
+  opacity: 0.4;
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
+.attach-chip {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  border-radius: 12px;
+  background: rgba(94, 234, 212, 0.06);
+  font-size: 12px;
+}
+
+.attach-chip svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--accent);
+}
+
+.attach-name {
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-where {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.attach-remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  padding: 2px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+}
+
+.attach-remove svg {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+}
+
+.attach-remove:hover {
+  color: var(--danger);
+}
+
+.attach-error {
+  flex-basis: 100%;
+  padding: 2px 4px;
+  color: var(--danger);
+  font-size: 11.5px;
 }
 
 .send-btn {

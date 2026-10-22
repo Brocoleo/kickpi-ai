@@ -31,6 +31,7 @@ def client(tmp_path, monkeypatch):
     # TestClient usa http://testserver: con Secure=True la cookie no viaja.
     monkeypatch.setenv("JARVIS_COOKIE_SECURE", "false")
     monkeypatch.setenv("JARVIS_STATIC_DIR", str(tmp_path / "static"))
+    monkeypatch.setenv("JARVIS_NAS_INBOX_DIR", str(tmp_path / "nas" / "Entrada"))
     get_settings.cache_clear()
     with TestClient(app) as test_client:
         yield test_client

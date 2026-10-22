@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # Segundos de espera para subidas/descargas grandes a través del proxy.
     filebrowser_timeout: float = 300.0
 
+    # --- Adjuntos del chat -------------------------------------------------
+    # Única carpeta del NAS montada con escritura en el contenedor del agente.
+    # El resto del NAS no existe para él (ver docker-compose).
+    nas_inbox_dir: str = "/mnt/data/nas/files/Entrada"
+    upload_max_mb: int = 50
+    # Los archivos se crean propiedad del usuario del host, no de root.
+    nas_inbox_uid: int = 1000
+    nas_inbox_gid: int = 1000
+
     # --- Persistencia y límites ---
     data_dir: str = "/data"
     history_limit: int = 20

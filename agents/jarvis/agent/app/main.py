@@ -8,14 +8,26 @@ Rutas:
 """
 import asyncio
 import json
+import os
 import logging
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -893,6 +905,81 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post(
+    "/api/files/upload",
+    tags=["files"],
+    dependencies=[Depends(require_human_mutation)],
+)
+async def upload_file(file: UploadFile = File(...)) -> dict:
+    """Recibe un adjunto del chat y lo deja en la carpeta Entrada del NAS.
+
+    Escribe SOLO dentro de `nas_inbox_dir` (la única carpeta montada con
+    permiso de escritura en el contenedor): es la vía para soltar algo
+    rápido sin darle al agente acceso de escritura al resto del NAS.
+
+    Requiere sesión humana + CSRF: un token de API no puede subir archivos.
+    """
+    settings = get_settings()
+    limite = settings.upload_max_mb * 1024 * 1024
+    inbox = Path(settings.nas_inbox_dir)
+
+    nombre_original = Path(file.filename or "adjunto").name
+    # Fuera separadores y caracteres de control; se conservan acentos.
+    limpio = re.sub(r"[^\w.\- ]+", "_", nombre_original, flags=re.UNICODE).strip(" .")
+    if not limpio:
+        limpio = "adjunto"
+    # Prefijo único: dos archivos con el mismo nombre no se pisan.
+    sello = time.strftime("%Y%m%d-%H%M%S")
+    nombre = f"{sello}-{uuid.uuid4().hex[:4]}-{limpio[:120]}"
+
+    try:
+        inbox.mkdir(parents=True, exist_ok=True)
+        destino = (inbox / nombre).resolve()
+        if inbox.resolve() not in destino.parents:
+            raise HTTPException(400, "Nombre de archivo no válido")
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(500, f"No se pudo preparar la carpeta de entrada: {exc}") from exc
+
+    tamano = 0
+    try:
+        with destino.open("wb") as salida:
+            while True:
+                trozo = await file.read(1024 * 1024)
+                if not trozo:
+                    break
+                tamano += len(trozo)
+                if tamano > limite:
+                    raise HTTPException(
+                        413, f"El archivo supera el límite de {settings.upload_max_mb} MB"
+                    )
+                salida.write(trozo)
+    except HTTPException:
+        destino.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        destino.unlink(missing_ok=True)
+        raise HTTPException(500, f"No se pudo guardar el archivo: {exc}") from exc
+    finally:
+        await file.close()
+
+    # El contenedor corre como root; FileBrowser y el usuario del host no.
+    try:
+        os.chown(destino, settings.nas_inbox_uid, settings.nas_inbox_gid)
+    except OSError:
+        pass
+
+    relativa = f"{inbox.name}/{nombre}"
+    log.info("adjunto guardado en la NAS: %s (%d bytes)", relativa, tamano)
+    return {
+        "ok": True,
+        "path": relativa,
+        "name": limpio,
+        "size": tamano,
+    }
 
 
 @app.post(

@@ -4,3 +4,4 @@ pydantic>=2.10,<3
 pydantic-settings>=2.7,<3
 httpx>=0.28,<0.29
 langgraph>=0.2.60,<0.3
+python-multipart>=0.0.9
