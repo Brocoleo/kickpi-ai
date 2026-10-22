@@ -1,35 +1,33 @@
 /* ==========================================================================
-   jarvis.css — tema de FileBrowser Quantum a juego con el PWA de Jarvis.
-   Se inyecta en <head> (frontend.styling.customCSS del config.yaml).
-   Paleta espejo de pwa/src/index.css: fondo #07090d, acento #5eead4.
+   jarvis.css — acento y detalles de FileBrowser Quantum a juego con Jarvis.
+   Se inyecta en <head> después del bloque nativo del servidor.
+
+   IMPORTANTE (versión 1.5.8): la app NO usa los tokens de la documentación v2
+   (--surfacePrimary se define en el bloque nativo, no aquí). Los knobs reales
+   para el color de marca son:
+     --primaryColor   botones, elementos activos, enlaces
+     --accentColor    badges y realces
+   El fondo claro/oscuro lo controla el servidor con lightBackground y
+   darkBackground del config.yaml. No redefinir tokens aquí: pisar el bloque
+   nativo es lo que dejó la interfaz rara.
    ========================================================================== */
 
-/* --- tokens (los que documenta FileBrowser + los propios del tema) ------- */
+/* --- color de marca ------------------------------------------------------- */
 :root {
-  --background: #eef2f6;
-  --alt-background: #e3e9f0;
-  --surfacePrimary: #ffffff;
-  --surfaceSecondary: #f2f6f9;
-  --textPrimary: #0f1b26;
-  --textSecondary: #52657a;
-  --primary-color: #0d9488;
-  --accent: #2dd4bf;
+  --primaryColor: #0d9488;
+  --accentColor: #2dd4bf;
   --jarvis-border: rgba(13, 148, 136, 0.16);
 }
 
 .dark-mode {
-  --background: #07090d;
-  --alt-background: #0b0f15;
-  --surfacePrimary: #0f141c;
-  --surfaceSecondary: #141a24;
-  --textPrimary: #e9eff8;
-  --textSecondary: #8b98ab;
-  --primary-color: #5eead4;
-  --accent: #5eead4;
+  /* Se mantiene el teal oscuro: los botones de Quantum pintan el texto en
+     blanco, así que un turquesa claro (#5eead4) perdería contraste. */
+  --primaryColor: #0d9488;
+  --accentColor: #5eead4;
   --jarvis-border: rgba(94, 234, 212, 0.1);
 }
 
-/* --- tipografia y fondo con el halo del chat ----------------------------- */
+/* --- tipografía del PWA --------------------------------------------------- */
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
     system-ui, sans-serif;
@@ -37,62 +35,18 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* --- halo turquesa discreto, igual que el chat (solo modo oscuro) --------- */
 .dark-mode body {
-  background:
-    radial-gradient(620px 320px at 50% -12%, rgba(94, 234, 212, 0.09), transparent 70%),
-    var(--background);
+  background-image: radial-gradient(
+    620px 320px at 50% -12%,
+    rgba(94, 234, 212, 0.07),
+    transparent 70%
+  );
   background-attachment: fixed;
+  background-repeat: no-repeat;
 }
 
-/* --- cabecera y barra lateral discretas, con borde turquesa tenue -------- */
-header,
-.header {
-  border-bottom: 1px solid var(--jarvis-border);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-}
-
-.dark-mode header,
-.dark-mode .header {
-  background: rgba(7, 9, 13, 0.78);
-}
-
-/* --- botones y enlaces con el acento de Jarvis --------------------------- */
-.btn-primary,
-button.primary {
-  background: var(--accent) !important;
-  border-color: var(--accent) !important;
-  color: #03201c !important;
-  font-weight: 600;
-}
-
-a:hover,
-a:focus-visible {
-  color: var(--accent) !important;
-}
-
-/* --- esquinas y sombras coherentes con el PWA ---------------------------- */
-.card,
-.btn,
-input,
-select,
-textarea {
-  border-radius: 12px;
-}
-
-.card,
-.preview,
-.listing-item {
-  border: 1px solid transparent;
-}
-
-.dark-mode .card,
-.dark-mode .listing-item:hover {
-  background: var(--surface-2, #141a24);
-  border-color: var(--jarvis-border);
-}
-
-/* --- scrollbar fina, tipo terminal --------------------------------------- */
+/* --- scrollbar fina ------------------------------------------------------- */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
