@@ -212,7 +212,10 @@ class Cliente:
                     continue
                 datos = json.loads(linea[5:].strip() or "{}")
 
-                if m.ms_primer_evento is None:
+                # `meta` viaja antes de llamar al modelo (lleva el id de la
+                # conversación). Contarlo como «primer evento» haría que toda
+                # medición pareciera instantánea: no es actividad del modelo.
+                if m.ms_primer_evento is None and evento != "meta":
                     m.ms_primer_evento = int((time.monotonic() - inicio) * 1000)
 
                 if evento == "segment":
