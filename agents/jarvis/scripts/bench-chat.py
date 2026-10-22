@@ -74,6 +74,9 @@ class Medicion:
     # coincidir: si no, la medición no vale.
     modelo_pedido: str | None = None
     modelo: str | None = None
+    # Lo que quedó guardado como respuesta. Cuando el modelo no llegó a hablar,
+    # aquí viaja el motivo (el agente escribe "⚠️ No pude consultar el modelo…").
+    respuesta: str = ""
     conversacion: str | None = None
 
 
@@ -231,6 +234,7 @@ class Cliente:
         m.caracteres = len(texto)
         m.modelo = cierre.get("model")
         m.conversacion = cierre.get("conversation_id")
+        m.respuesta = (cierre.get("reply") or "").strip()
 
         # Diagnóstico del propio servidor (desplegado desde 0.7): sirve para
         # contrastar la medición del cliente con la del servidor.
@@ -297,6 +301,19 @@ def obtener_password() -> str:
         return ""
 
 
+def explicar(m: Medicion) -> str:
+    """Motivos del fallo y, si el modelo ni habló, qué respondió el servidor.
+
+    Sin esto, un turno rechazado por el proveedor solo dice "no llegó ni un
+    token": el motivo viaja en la respuesta persistida, que es la que el
+    usuario vería en el chat.
+    """
+    partes = list(m.problemas)
+    if not m.ok and m.respuesta and m.tokens == 0:
+        partes.append(f"respondió: {m.respuesta[:160]}")
+    return "; ".join(partes)
+
+
 def percentil(valores: list[int], p: float) -> int:
     if not valores:
         return 0
@@ -324,13 +341,17 @@ def mostrar_estado(base: str, estado: dict) -> None:
     fusible = estado.get("circuit_breaker") or {}
     print("fusible:")
     if not fusible:
-        print("  nada abierto: todos respondieron o aún no se probaron")
+        print("  sin fallos recientes: todos respondieron o aún no se probaron")
     for modelo, datos in fusible.items():
-        estado_modelo = "ABIERTO" if datos.get("open") else "half-open (ya se reintenta)"
+        estado_modelo = "ABIERTO" if datos.get("open") else "sin abrir (un fallo)"
+        edad = datos.get("last_failure_ago_s")
+        cuando = f"hace {edad}s" if edad is not None else "sin fecha"
         print(
-            f"  {modelo}: {estado_modelo}, reabre en {datos.get('reopens_in_s')}s, "
-            f"fallos {datos.get('failures')}, último: {datos.get('last_error')}"
+            f"  {modelo}: {estado_modelo}, {cuando}, fallos {datos.get('failures')}, "
+            f"último: {datos.get('last_error')}"
         )
+        if datos.get("open"):
+            print(f"      reabre en {datos.get('reopens_in_s')}s")
 
     politica = estado.get("policy") or {}
     if politica:
@@ -482,7 +503,7 @@ def main() -> int:
                     # Una línea por medición: la comparación tarda minutos y
                     # conviene ver que avanza. Si falla, dice por qué: sin eso
                     # haber sabido la causa exige un diagnóstico aparte.
-                    detalle = "" if m.ok else f" → {'; '.join(m.problemas)}"
+                    detalle = "" if m.ok else f" → {explicar(m)}"
                     print(
                         f"  {objetivo} · {caso}: "
                         f"{'ok' if m.ok else 'FALLO'} ({m.ms_total or 0}ms){detalle}",
@@ -506,6 +527,7 @@ def main() -> int:
                         "narracion": m.narracion,
                         "modelo_pedido": m.modelo_pedido,
                         "modelo": m.modelo,
+                        "respuesta": m.respuesta,
                     }
                     for m in mediciones
                 ],
@@ -569,7 +591,7 @@ def main() -> int:
         print("-" * 84)
         for m in mediciones:
             marca = "ok" if m.ok else "FALLO"
-            detalle = "" if m.ok else f" ({'; '.join(m.problemas)})"
+            detalle = "" if m.ok else f" ({explicar(m)})"
             print(
                 f"{m.caso:<14} {m.ms_primer_evento or 0:>7}ms "
                 f"{m.ms_primer_token or 0:>8}ms {m.ms_total or 0:>7}ms "

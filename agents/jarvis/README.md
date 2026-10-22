@@ -243,7 +243,13 @@ Por defecto `simple` mide sólo el tiempo del proveedor y `estado` /
 `--estado` no mide: muestra la cadena en orden de intento, el **fusible**
 (`circuit_breaker`: qué modelo está bloqueado y por qué error) y la política de
 fallback. Es lo que distingue "el modelo está en enfriamiento" de "el proveedor
-nos rechaza" — por ejemplo, la cuota diaria del nivel gratuito.
+nos rechaza" — por ejemplo, la cuota diaria del nivel gratuito. Incluye también
+los modelos que fallaron **sin llegar a abrirse**, con cuánto hace del fallo.
+
+Cuando un turno falla sin haber emitido ni un token, la tabla dice además lo
+que **respondió** el servidor. Ahí el agente escribe el motivo real
+(`⚠️ No pude consultar el modelo: … HTTP 429 …`), que es lo que verías en el
+chat: el banco no lo escondía, lo tiraba.
 
 La contraseña se pide por el terminal con `getpass` (como sudo: no se muestra y
 no pasa por el historial). Para cron o scripts sigue valiendo
