@@ -205,7 +205,13 @@ cd pwa && npm run test:e2e
 ./scripts/bench-chat.py --loop 5   # p50/p95
 ./scripts/bench-chat.py --model nvidia/nemotron-3-nano-30b-a3b:free
 ./scripts/bench-chat.py --comparar --loop 3   # toda la cadena, una contraseña
+./scripts/bench-chat.py --estado   # cadena, fusible y política del LLM
 ```
+
+Sin `--url` se prueba primero `127.0.0.1:8888` y, si ahí no escucha nadie, el
+canal de Tailscale: el mismo comando vale desde el Mac y desde un cron en la
+placa. Un fallo de conexión se cuenta en **una línea** (nada de tracebacks), que
+es lo que quiere un cron.
 
 Mide tiempo al primer evento, primer token y cierre, cuántas herramientas usó y
 si la respuesta llegó vacía. Falla (exit 1) si el stream no cierra, si no llega
@@ -230,8 +236,14 @@ avisa si aun así el servidor usó otro.
 
 `--comparar` mide **todos** los modelos de la cadena en una sola sesión (una
 contraseña) y saca la tabla con la que se decide, con el más rápido al primer
-token señalado al final. Por defecto `simple` mide sólo el tiempo del proveedor
-y `estado` / `contenedores` añaden una herramienta real.
+token señalado al final. Cada turno informa su avance y, si falla, **por qué**.
+Por defecto `simple` mide sólo el tiempo del proveedor y `estado` /
+`contenedores` añaden una herramienta real.
+
+`--estado` no mide: muestra la cadena en orden de intento, el **fusible**
+(`circuit_breaker`: qué modelo está bloqueado y por qué error) y la política de
+fallback. Es lo que distingue "el modelo está en enfriamiento" de "el proveedor
+nos rechaza" — por ejemplo, la cuota diaria del nivel gratuito.
 
 La contraseña se pide por el terminal con `getpass` (como sudo: no se muestra y
 no pasa por el historial). Para cron o scripts sigue valiendo

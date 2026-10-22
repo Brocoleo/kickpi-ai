@@ -10,8 +10,14 @@ Uso (la forma fácil: pregunta y no se ve lo que escribes):
 
     ./scripts/bench-chat.py
     ./scripts/bench-chat.py --loop 5
+    ./scripts/bench-chat.py --comparar --loop 3     # toda la cadena, una vez
+    ./scripts/bench-chat.py --estado                # fusible y política del LLM
     ./scripts/bench-chat.py --url http://127.0.0.1:8888
     ./scripts/bench-chat.py --json > medicion.json
+
+Sin `--url` se prueba primero el agente local (127.0.0.1:8888, como dentro de
+la placa) y, si nadie escucha ahí, el canal de Tailscale: así el mismo comando
+vale desde el Mac y desde un cron de la placa.
 
 Para cron o scripts, la variable de entorno sigue valiendo:
 
@@ -36,6 +42,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+
+# Agente local (cuando el banco corre en la placa) y canal de Tailscale
+# (cuando corre desde fuera). Sin `--url` se prueban en este orden.
+URL_LOCAL = "http://127.0.0.1:8888"
+URL_TAILSCALE = "https://kickpi-jarvis.tail1e3b4d.ts.net"
 
 # Casos por defecto: de solo lectura, para no dejar aprobaciones pendientes.
 CASOS = [
@@ -64,6 +75,21 @@ class Medicion:
     modelo_pedido: str | None = None
     modelo: str | None = None
     conversacion: str | None = None
+
+
+class SinConexion(Exception):
+    """No hay nada escuchando (o no responde) en la URL indicada.
+
+    Existe para que un fallo de red se cuente en una línea, no como un
+    traceback de Python: el banco también va en cron.
+    """
+
+
+def _motivo(exc: Exception) -> str:
+    """El motivo de red, en corto (urllib lo esconde en `reason`)."""
+    razon = getattr(exc, "reason", exc)
+    texto = str(razon) or razon.__class__.__name__
+    return texto.splitlines()[-1].strip()
 
 
 class Cliente:
@@ -108,25 +134,27 @@ class Cliente:
         except urllib.error.HTTPError as exc:
             detalle = exc.read().decode(errors="replace")[:200]
             raise SystemExit(f"login falló ({exc.code}): {detalle}") from exc
+        except (urllib.error.URLError, ConnectionError, OSError) as exc:
+            raise SinConexion(f"{self.base} ({_motivo(exc)})") from None
 
         self.csrf = cuerpo.get("csrf_token") or ""
         if not self.cookie:
             raise SystemExit("login no devolvió cookie de sesión")
 
-    def modelos(self) -> list[str]:
-        """Cadena configurada en el servidor (para saber qué acepta --model).
+    def estado_llm(self) -> dict:
+        """Cadena, fusible y política del servidor (para saber qué acepta --model).
 
         Es informativo: si el servidor es viejo y no tiene la ruta, se
-        devuelve una lista vacía y el banco sigue como siempre.
+        devuelve un diccionario vacío y el banco sigue como siempre.
         """
         peticion = urllib.request.Request(
             f"{self.base}/api/llm/status", headers=self._cabeceras()
         )
         try:
             with urllib.request.urlopen(peticion, timeout=self.timeout) as respuesta:
-                return list(json.loads(respuesta.read() or b"{}").get("models") or [])
+                return json.loads(respuesta.read() or b"{}")
         except (urllib.error.HTTPError, OSError, ValueError):
-            return []
+            return {}
 
     def borrar_conversacion(self, conv_id: str) -> bool:
         peticion = urllib.request.Request(
@@ -159,6 +187,11 @@ class Cliente:
             detalle = exc.read().decode(errors="replace")[:200]
             m.ok = False
             m.problemas.append(f"HTTP {exc.code}: {detalle}")
+            return m
+        except (urllib.error.URLError, ConnectionError, OSError) as exc:
+            m.ok = False
+            m.ms_total = int((time.monotonic() - inicio) * 1000)
+            m.problemas.append(f"no se pudo conectar: {_motivo(exc)}")
             return m
 
         evento = ""
@@ -272,12 +305,49 @@ def percentil(valores: list[int], p: float) -> int:
     return ordenados[indice]
 
 
+def mostrar_estado(base: str, estado: dict) -> None:
+    """La cadena, el fusible y la política: el porqué de un fallo, sin sudo.
+
+    Cuando un modelo se queda ciego, esto distingue las dos causas posibles:
+    fusible abierto por fallos seguidos (se cura solo) o el proveedor
+    rechazando (por ejemplo, cuota diaria del nivel gratuito).
+    """
+    if not estado:
+        print(f"{base} no informa su estado LLM (¿agente viejo?)")
+        return
+
+    print(f"servidor: {base}")
+    print("modelos (en orden de intento):")
+    for numero, modelo in enumerate(estado.get("models") or [], 1):
+        print(f"  {numero}. {modelo}")
+
+    fusible = estado.get("circuit_breaker") or {}
+    print("fusible:")
+    if not fusible:
+        print("  nada abierto: todos respondieron o aún no se probaron")
+    for modelo, datos in fusible.items():
+        estado_modelo = "ABIERTO" if datos.get("open") else "half-open (ya se reintenta)"
+        print(
+            f"  {modelo}: {estado_modelo}, reabre en {datos.get('reopens_in_s')}s, "
+            f"fallos {datos.get('failures')}, último: {datos.get('last_error')}"
+        )
+
+    politica = estado.get("policy") or {}
+    if politica:
+        print("política:")
+        for clave, valor in politica.items():
+            print(f"  {clave}: {valor}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Banco de pruebas del chat real")
     parser.add_argument(
         "--url",
-        default=os.environ.get("JARVIS_URL", "http://127.0.0.1:8888"),
-        help="base del agente (por defecto la placa en local)",
+        default=None,
+        help=(
+            "base del agente. Por defecto el agente local y, si ahí no "
+            "responde nadie, el canal de Tailscale"
+        ),
     )
     parser.add_argument("--loop", type=int, default=1, help="repeticiones por caso")
     parser.add_argument("--timeout", type=float, default=120.0)
@@ -302,6 +372,14 @@ def main() -> int:
             "tabla comparativa. Una sola contraseña para toda la cadena"
         ),
     )
+    parser.add_argument(
+        "--estado",
+        action="store_true",
+        help=(
+            "muestra la cadena de modelos, el fusible (circuit breaker) y la "
+            "política de fallback del servidor, y no mide nada"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="salida JSON")
     parser.add_argument(
         "--no-cleanup", action="store_true", help="no borrar las conversaciones creadas"
@@ -324,12 +402,37 @@ def main() -> int:
         print(f"no hay casos válidos en {pedidos}", file=sys.stderr)
         return 2
 
-    cliente = Cliente(args.url, password, args.timeout, args.model)
-    cliente.login()
+    # Sin `--url` (ni JARVIS_URL) se prueba el agente local y, si no hay nada
+    # escuchando, el canal de Tailscale: el mismo comando sirve en el Mac y en
+    # la placa.
+    base = args.url or os.environ.get("JARVIS_URL") or URL_LOCAL
+    cliente = Cliente(base, password, args.timeout, args.model)
+    try:
+        cliente.login()
+    except SinConexion as exc:
+        if base != URL_LOCAL:
+            print(f"no pude conectar: {exc}", file=sys.stderr)
+            return 2
+        print(f"sin respuesta en {exc}; pruebo {URL_TAILSCALE}", file=sys.stderr)
+        cliente = Cliente(URL_TAILSCALE, password, args.timeout, args.model)
+        try:
+            cliente.login()
+        except SinConexion as exc2:
+            print(f"no pude conectar: {exc2}", file=sys.stderr)
+            return 2
 
     # Solo se pueden medir modelos de la cadena configurada. Enseñarla
     # evita adivinar nombres y chocar con el 400 del servidor.
-    cadena = cliente.modelos()
+    estado_llm = cliente.estado_llm()
+    cadena = list(estado_llm.get("models") or [])
+
+    if args.estado:
+        if args.json:
+            print(json.dumps(estado_llm, indent=2, ensure_ascii=False))
+        else:
+            mostrar_estado(cliente.base, estado_llm)
+        return 0
+
     if cadena and not args.json and not args.comparar:
         print("modelos de la cadena: " + ", ".join(cadena))
     if args.model and cadena and args.model not in cadena:
@@ -377,10 +480,12 @@ def main() -> int:
                     cliente.borrar_conversacion(m.conversacion)
                 if args.comparar and not args.json:
                     # Una línea por medición: la comparación tarda minutos y
-                    # conviene ver que avanza.
+                    # conviene ver que avanza. Si falla, dice por qué: sin eso
+                    # haber sabido la causa exige un diagnóstico aparte.
+                    detalle = "" if m.ok else f" → {'; '.join(m.problemas)}"
                     print(
                         f"  {objetivo} · {caso}: "
-                        f"{'ok' if m.ok else 'FALLO'} ({m.ms_total or 0}ms)",
+                        f"{'ok' if m.ok else 'FALLO'} ({m.ms_total or 0}ms){detalle}",
                         file=sys.stderr,
                     )
 
