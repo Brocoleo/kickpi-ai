@@ -107,6 +107,28 @@ sudo tailscale serve --bg --https=8888 http://localhost:8888
 
 URL de la PWA: `https://kickpi-jarvis.tail1e3b4d.ts.net:8888/`
 
+## El disco de datos se desenganchó (operación de emergencia)
+
+El NAS, Docker y las copias viven en `/mnt/data` (USB externo). Si devuelve
+`input/output error` en todo (fs, contenedores que no arrancan), el motivo
+típico es un desenganche del bus: el disco se reenumera (`sda` → `sdb` →
+`sda`) y queda un montaje "atascado" sobre un dispositivo que ya no existe.
+
+Todo deploy **verifica primero** que el disco responde a escritura y aborta
+sin construir nada si no. Arreglo manual, desde el Mac:
+
+```bash
+ssh -t -i ~/.ssh/id_ed25519_jarvis \
+  leandro@100.111.200.54 'sudo bash /home/leandro/jarvis/deploy/remote/montar-datos.sh'
+```
+
+El script diagnostica (disco presente, montaje, escritura real —crear y
+borrar—), sanea el montaje atascado y, si el fallo es de superbloque, detiene
+la placa y guía el `fsck` **en frío** (reparar un FS a medias en caliente
+empeora la cosa). Vigilancia: si reaparece sin que nadie toque el hardware,
+el problema es físico (cable, puente o el disco) — cambiar hardware y
+restaurar desde copia.
+
 ## Despliegue y actualización
 
 Un solo comando, con verificación de extremo a extremo:

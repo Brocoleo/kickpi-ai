@@ -70,6 +70,24 @@ revisar_commit() {
   fi
 }
 
+# --- El disco de datos debe estar vivo antes de gastar un build ------------
+# El agente, el NAS y las copias viven en /mnt/data. Si el USB se desenganchó
+# (pasó el 2026-10-22), los contenedores no pueden recrearse y un deploy
+# "exitoso" dejaría la mitad de la infraestructura caída. Detector temprano.
+previa_disco() {
+  paso "0/4 verificando el disco de datos"
+  local salida
+  salida="$(remote \
+    "mountpoint -q /mnt/data && touch /mnt/data/.prueba-deploy && rm /mnt/data/.prueba-deploy && echo OK" \
+    || true)"
+  if [ "$salida" != "OK" ]; then
+    rojo "✗ /mnt/data no responde a escritura (disco USB desenganchado/colgado)"
+    echo "  Arreglo: ssh -t $BOARD 'sudo bash $REMOTE_DIR/deploy/remote/montar-datos.sh'"
+    exit 1
+  fi
+  verde "✔ /mnt/data vivo"
+}
+
 # --- Sincronizar código (sin sudo: /home/leandro/jarvis es tuyo) -----------
 sincronizar_codigo() {
   revisar_commit
@@ -78,6 +96,12 @@ sincronizar_codigo() {
     "$HERE/agent/app/" "$BOARD:$REMOTE_DIR/agent/app/"
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/agent/tests/" "$BOARD:$REMOTE_DIR/agent/tests/"
+  # El requirements del agente define lo que se instala en la imagen:
+  # sin sincronizarlo, Docker reutiliza la capa vieja y el агente arranca
+  # sin dependencias nuevas (pasa con python-multipart el 2026-10-22).
+  rsync -az -e "$RSYNC_SSH" \
+    "$HERE/agent/requirements.txt" "$HERE/agent/Dockerfile" \
+    "$BOARD:$REMOTE_DIR/agent/"
   rsync -az -e "$RSYNC_SSH" \
     "$HERE/executor/app/" "$BOARD:$REMOTE_DIR/executor/app/"
   rsync -az -e "$RSYNC_SSH" \
@@ -197,6 +221,7 @@ case "${1:-}" in
     deploy_pwa
     ;;
   --agent)
+    previa_disco
     sincronizar_codigo
     reconstruir_agente
     # El agente y su PWA se publican juntos: desplegar solo el backend dejó
@@ -205,23 +230,27 @@ case "${1:-}" in
     verificar && verde "✔ desplegado y verificado"
     ;;
   --tools)
+    previa_disco
     sincronizar_codigo
     reconstruir_herramientas
     verificar && verde "✔ herramientas desplegadas y verificadas"
     ;;
   --executor)
+    previa_disco
     sincronizar_codigo
     reconstruir_ejecutor
     verificar && verde "✔ ejecutor desplegado y verificado"
     ;;
   --test)
     tests
+    previa_disco
     sincronizar_codigo
     reconstruir_ambos
     deploy_pwa
     verificar && verde "✔ desplegado y verificado"
     ;;
   --full|"")
+    previa_disco
     sincronizar_codigo
     reconstruir_ambos
     deploy_pwa
