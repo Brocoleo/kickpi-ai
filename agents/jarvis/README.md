@@ -201,15 +201,19 @@ cd pwa && npm run test:e2e
 **Y contra el servidor de verdad**, para medir lo que siente el usuario:
 
 ```bash
-JARVIS_PASSWORD=... ./scripts/bench-chat.py            # desde el Mac, sin sudo
-JARVIS_PASSWORD=... ./scripts/bench-chat.py --loop 5   # p50/p95
+./scripts/bench-chat.py            # pregunta la contraseña (no se ve)
+./scripts/bench-chat.py --loop 5   # p50/p95
 ```
 
 Mide tiempo al primer evento, primer token y cierre, cuántas herramientas usó y
 si la respuesta llegó vacía. Falla (exit 1) si el stream no cierra, si no llega
 texto o si el caso esperaba herramientas y no hubo: sirve también en un cron.
-La contraseña va **solo** por entorno (nunca por argumento, que quedaría en el
-historial del shell) y las conversaciones que crea se borran al terminar.
+
+La contraseña se pide por el terminal con `getpass` (como sudo: no se muestra y
+no pasa por el historial). Para cron o scripts sigue valiendo
+`JARVIS_PASSWORD=... ./scripts/bench-chat.py`; nunca por argumento, que sí
+quedaría escrito en el historial. Las conversaciones que crea el banco se borran
+al terminar, para no ensuciar tu historial de chat.
 
 El banco E2E **no toca la placa**: simula el backend con interceptación de rutas,
 así que comprueba la interfaz de verdad en segundos y sin contraseñas. Cubre el

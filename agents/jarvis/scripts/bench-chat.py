@@ -6,15 +6,20 @@ el primer evento, el primer token y el cierre; si las herramientas aparecen;
 y si la respuesta final llega vacía. Sirve para debuggear "va lento", "se
 quedó pensando" o "no hizo nada" sin abrir el contenedor.
 
-Uso:
+Uso (la forma fácil: pregunta y no se ve lo que escribes):
+
+    ./scripts/bench-chat.py
+    ./scripts/bench-chat.py --loop 5
+    ./scripts/bench-chat.py --url http://127.0.0.1:8888
+    ./scripts/bench-chat.py --json > medicion.json
+
+Para cron o scripts, la variable de entorno sigue valiendo:
 
     JARVIS_PASSWORD=... ./scripts/bench-chat.py
-    JARVIS_PASSWORD=... ./scripts/bench-chat.py --loop 5
-    JARVIS_PASSWORD=... ./scripts/bench-chat.py --url http://127.0.0.1:8888
-    JARVIS_PASSWORD=... ./scripts/bench-chat.py --json > medicion.json
 
-La contraseña viaja SOLO por variable de entorno: nunca por argumento (queda
-en el historial del shell) ni por archivo. Solo stdlib: no necesita venv.
+La contraseña nunca viaja por argumento (quedaría en el historial del shell)
+ni se escribe en un archivo: o sale del entorno, o se pide por el terminal con
+`getpass` (como sudo: no se muestra y no pasa por el historial). Solo stdlib.
 
 Salida: tabla por caso y código de salida 1 si algo falla, para poder usarlo
 en un cron o en un deploy.
@@ -22,6 +27,7 @@ en un cron o en un deploy.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import statistics
@@ -196,6 +202,28 @@ class Cliente:
         return m
 
 
+def obtener_password() -> str:
+    """La contraseña del entorno o, si falta, preguntada por el terminal.
+
+    `getpass` lee de /dev/tty, así que no se ve lo tecleado y no queda en el
+    historial del shell. En un cron no hay terminal: ahí se exige la variable
+    de entorno y se falla claro, sin quedarse esperando una entrada que nunca
+    llegará.
+    """
+    valor = os.environ.get("JARVIS_PASSWORD", "")
+    if valor:
+        return valor
+
+    if not sys.stdin.isatty():
+        return ""
+
+    try:
+        return getpass.getpass(f"Contraseña de {os.environ.get('JARVIS_URL', 'Jarvis')}: ")
+    except (KeyboardInterrupt, EOFError):
+        print("", file=sys.stderr)
+        return ""
+
+
 def percentil(valores: list[int], p: float) -> int:
     if not valores:
         return 0
@@ -224,10 +252,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    password = os.environ.get("JARVIS_PASSWORD", "")
+    password = obtener_password()
     if not password:
         print(
-            "falta JARVIS_PASSWORD. Se pasa por entorno, nunca por argumento:\n"
+            "falta la contraseña. Sin terminal interactivo hay que pasarla por "
+            "entorno (nunca por argumento):\n"
             "  JARVIS_PASSWORD=... ./scripts/bench-chat.py",
             file=sys.stderr,
         )
