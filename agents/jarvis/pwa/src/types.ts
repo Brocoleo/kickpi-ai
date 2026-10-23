@@ -214,6 +214,8 @@ export type NasEntry = {
   ext?: string;
   /** El backend confirma que vive dentro de Entrada/ y se puede borrar. */
   deletable?: boolean;
+  /** Subcarpeta dentro de Entrada/ (Fotos, Videos, Documentos…). */
+  folder?: string;
 };
 
 export type NasListing = {

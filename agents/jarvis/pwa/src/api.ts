@@ -330,6 +330,10 @@ export const api = {
       `/nas/search?q=${encodeURIComponent(q)}&content=${content}&limit=${limit}`,
     ),
 
+  /** Estado del índice + ruta del inbox (la declara el backend). */
+  nasStatus: () =>
+    request<{ inbox?: string; ready?: boolean; files?: number }>("/nas/status"),
+
   /** URL de una miniatura o descarga (la sesión viaja en la cookie). */
   nasFileUrl: (path: string, download = false) =>
     `/api/nas/file?path=${encodeURIComponent(path)}${

@@ -108,7 +108,7 @@ function Archivo({
         <span className="nas-file-text">
           <span className="nas-file-name">{item.name}</span>
           <span className="nas-file-meta">
-            {[formatoTamano(item.size), fecha(item.modified)]
+            {[item.folder, formatoTamano(item.size), fecha(item.modified)]
               .filter(Boolean)
               .join(" · ")}
           </span>
@@ -175,6 +175,10 @@ export function Files({
   const [error, setError] = useState<string | null>(null);
   const [visor, setVisor] = useState<NasEntry | null>(null);
   const [confirmarBorrado, setConfirmarBorrado] = useState<string | null>(null);
+  // Rutas borradas en esta sesión: se ocultan aunque el índice tarde un
+  // instante en reflejarlo (y evita que un refresco lento las resucite).
+  const [ocultos, setOcultos] = useState<string[]>([]);
+  const [inbox, setInbox] = useState("files/Entrada");
   const [frameListo, setFrameListo] = useState(false);
   const portainer = portainerUrl();
 
@@ -186,8 +190,10 @@ export function Files({
     [onUnauthorized],
   );
 
-  const cargarRecientes = useCallback(async () => {
-    setCargando(true);
+  type OpcionesCarga = { silencioso?: boolean };
+
+  const cargarRecientes = useCallback(async (opciones?: OpcionesCarga) => {
+    if (!opciones?.silencioso) setCargando(true);
     setError(null);
     try {
       const data = await api.nasRecent(30);
@@ -196,12 +202,12 @@ export function Files({
     } catch (err) {
       gestionarError(err);
     } finally {
-      setCargando(false);
+      if (!opciones?.silencioso) setCargando(false);
     }
   }, [gestionarError]);
 
-  const cargarCarpeta = useCallback(async (nuevaRuta: string) => {
-    setCargando(true);
+  const cargarCarpeta = useCallback(async (nuevaRuta: string, opciones?: OpcionesCarga) => {
+    if (!opciones?.silencioso) setCargando(true);
     setError(null);
     try {
       const data = await api.nasList(nuevaRuta);
@@ -211,7 +217,7 @@ export function Files({
     } catch (err) {
       gestionarError(err);
     } finally {
-      setCargando(false);
+      if (!opciones?.silencioso) setCargando(false);
     }
   }, [gestionarError]);
 
@@ -227,6 +233,19 @@ export function Files({
     void cargarRecientes();
     void cargarCarpeta("");
   }, [cargarRecientes, cargarCarpeta]);
+
+  useEffect(() => {
+    // La ruta del inbox la declara el backend (/api/nas/status): la PWA no
+    // la adivina. Si falla, el fallback solo afecta al atajo de navegación.
+    api
+      .nasStatus()
+      .then((datos) => {
+        if (datos.inbox) setInbox(datos.inbox);
+      })
+      .catch(() => {
+        /* sin drama: la navegación sigue funcionando con el fallback */
+      });
+  }, []);
 
   useEffect(() => {
     if (!visor) return;
@@ -274,18 +293,32 @@ export function Files({
   const borrar = useCallback(
     async (item: NasEntry) => {
       setError(null);
+      setConfirmarBorrado(null);
+      // Ocultar YA. El DELETE es rápido; lo lento era recargar el índice
+      // (hasta 15 min de caché), y el usuario se quedaba mirando el archivo.
+      setOcultos((prev) =>
+        prev.includes(item.path) ? prev : [...prev, item.path],
+      );
+      setVisor((actual) =>
+        actual && actual.path === item.path ? null : actual,
+      );
       try {
         await api.deleteNasFile(item.path, csrfToken);
-        setConfirmarBorrado(null);
-        // Si el borrado se hizo desde el visor, ciérralo: ya no existe.
-        setVisor((actual) => (actual && actual.path === item.path ? null : actual));
-        if (vista === "buscar" && resultados) {
-          setResultados(await api.nasSearch(resultados.query));
-        } else if (vista === "explorar") {
-          await cargarCarpeta(ruta);
+        // El backend ya invalidó su índice: recargar sin bloquear la UI
+        // (silencioso: no queremos que toda la lista parpadee a «Cargando…»).
+        void cargarRecientes({ silencioso: true });
+        if (vista === "explorar") {
+          void cargarCarpeta(ruta, { silencioso: true });
         }
-        await cargarRecientes();
+        if (vista === "buscar" && resultados) {
+          void api
+            .nasSearch(resultados.query)
+            .then(setResultados)
+            .catch(gestionarError);
+        }
       } catch (err) {
+        // Si falló, vuelve a mostrarlo: no mentimos con un borrado falso.
+        setOcultos((prev) => prev.filter((p) => p !== item.path));
         gestionarError(err);
       }
     },
@@ -317,10 +350,24 @@ export function Files({
   }, []);
 
   const partes = ruta ? ruta.split("/") : [];
-  const listadoVacio =
-    vista === "explorar" && listado && !listado.dirs.length && !listado.files.length;
+  const visible = (item: NasEntry) => !ocultos.includes(item.path);
+  const archivosExplorar = (listado?.files ?? []).filter(visible);
+  const recientesVisibles = recientes.filter(visible);
+  const resultadosVisibles = (resultados?.results ?? []).filter(visible);
   const archivosVista =
-    vista === "buscar" ? resultados?.results ?? [] : recientes;
+    vista === "buscar" ? resultadosVisibles : recientesVisibles;
+  const totalCoincidencias = resultados
+    ? Math.max(
+        0,
+        resultados.total_matches -
+          (resultados.results.length - resultadosVisibles.length),
+      )
+    : 0;
+  const listadoVacio =
+    vista === "explorar" &&
+    !!listado &&
+    !listado.dirs.length &&
+    !archivosExplorar.length;
 
   // Borrar solo se ofrece para adjuntos propios: lo decide el backend con
   // `deletable` (él es quien conoce la ruta real de Entrada/). La UI no
@@ -465,9 +512,9 @@ export function Files({
               ))}
             </ul>
           )}
-          {listado.files.length > 0 && (
+          {archivosExplorar.length > 0 && (
             <div className="nas-list">
-              {listado.files.map((item) => (
+              {archivosExplorar.map((item) => (
                 <Archivo key={item.path} item={item} onAbrir={abrir} {...acciones(item)} />
               ))}
             </div>
@@ -480,6 +527,14 @@ export function Files({
 
       {vista === "recientes" && !cargando && (
         <>
+          <button
+            type="button"
+            className="ghost-btn nas-inbox-link"
+            onClick={() => irAExplorar(inbox)}
+          >
+            <FolderIcon />
+            Ver carpetas de Entrada
+          </button>
           {archivosVista.length === 0 ? (
             <p className="nas-empty">Aún no hay archivos en el NAS.</p>
           ) : (
@@ -495,16 +550,16 @@ export function Files({
       {vista === "buscar" && resultados && !cargando && (
         <>
           <p className="nas-status">
-            {resultados.total_matches === 0
+            {totalCoincidencias === 0
               ? `Sin resultados para «${resultados.query}».`
-              : `${resultados.total_matches} coincidencia${
-                  resultados.total_matches === 1 ? "" : "s"
+              : `${totalCoincidencias} coincidencia${
+                  totalCoincidencias === 1 ? "" : "s"
                 } para «${resultados.query}».`}
             {!resultados.ready && " El índice todavía se está construyendo."}
           </p>
-          {resultados.results.length > 0 && (
+          {resultadosVisibles.length > 0 && (
             <div className="nas-list">
-              {resultados.results.map((item) => (
+              {resultadosVisibles.map((item) => (
                 <div key={item.path} className="nas-file-wrap">
                   <Archivo item={item} onAbrir={abrir} {...acciones(item)} />
                   {item.snippet && <p className="nas-snippet">{item.snippet}</p>}

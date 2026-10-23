@@ -12,6 +12,7 @@ const apiMock = vi.hoisted(() => ({
   nasRecent: vi.fn(),
   nasList: vi.fn(),
   nasSearch: vi.fn(),
+  nasStatus: vi.fn(),
   deleteNasFile: vi.fn(),
   nasFileUrl: vi.fn(
     (path: string) => `/api/nas/file?path=${encodeURIComponent(path)}`,
@@ -37,7 +38,13 @@ describe("Files · panel NAS nativo", () => {
     apiMock.nasRecent.mockReset();
     apiMock.nasList.mockReset();
     apiMock.nasSearch.mockReset();
+    apiMock.nasStatus.mockReset();
     apiMock.deleteNasFile.mockReset();
+    apiMock.nasStatus.mockResolvedValue({
+      inbox: "files/Entrada",
+      ready: true,
+      files: 1,
+    });
     apiMock.deleteNasFile.mockResolvedValue({
       ok: true,
       path: "files/Entrada/Fotos/foto.jpg",
@@ -51,6 +58,7 @@ describe("Files · panel NAS nativo", () => {
           size: 2048,
           modified: "2026-10-20T12:00:00+00:00",
           deletable: true,
+          folder: "Fotos",
         },
       ],
       error: null,
@@ -134,6 +142,37 @@ describe("Files · panel NAS nativo", () => {
     expect(apiMock.deleteNasFile).toHaveBeenCalledWith(
       "files/Entrada/Fotos/foto.jpg",
       "csrf-123",
+    );
+    // Desaparece al instante: no espera al refresco (lento) del índice.
+    await waitFor(() =>
+      expect(screen.queryByText("foto.jpg")).not.toBeInTheDocument(),
+    );
+    // Y un refresco que todavía devuelva el archivo no lo resucita.
+    await waitFor(() => expect(apiMock.nasRecent).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("foto.jpg")).not.toBeInTheDocument();
+  });
+
+  it("muestra la carpeta de clasificación en cada archivo", async () => {
+    render(<Files csrfToken={null} onUnauthorized={() => {}} />);
+
+    await screen.findByText("foto.jpg");
+    expect(screen.getByText(/Fotos · 2 KB/)).toBeInTheDocument();
+  });
+
+  it("lleva a las carpetas de Entrada desde Recientes", async () => {
+    render(<Files csrfToken={null} onUnauthorized={() => {}} />);
+
+    await screen.findByText("foto.jpg");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Ver carpetas de Entrada" }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.nasList).toHaveBeenCalledWith("files/Entrada"),
+    );
+    expect(screen.getByRole("tab", { name: "Explorar" })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
   });
 

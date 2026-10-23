@@ -62,7 +62,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.16.0"
+VERSION = "0.17.0"
 
 # Extensiones que no se aceptan como adjuntos. No se ejecutan en el servidor,
 # pero la NAS no debe convertirse en un depósito de programas descargables.
@@ -1112,15 +1112,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     # Invalidar la caché del índice para la carpeta Entrada (cubre las
     # subcarpetas), de modo que búsquedas posteriores vean el archivo al
     # instante (sin esperar 15 min).
-    try:
-        async with httpx.AsyncClient(timeout=settings.tools_timeout) as client:
-            await client.post(
-                f"{settings.tools_url}/nas/refresh",
-                params={"subruta": settings.nas_inbox_rel.strip("/")},
-                headers=_tools_headers(),
-            )
-    except Exception:  # noqa: BLE001 - best-effort, no romper la subida si falla
-        log.warning("no se pudo refrescar el índice NAS tras la subida")
+    await _refrescar_indice_nas()
 
     return {
         "ok": True,
@@ -1139,6 +1131,24 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
 # --------------------------------------------------------------------------- #
 def _tools_headers() -> dict[str, str]:
     return {"X-Tools-Token": get_settings().tools_token}
+
+
+async def _refrescar_indice_nas() -> None:
+    """Invalida el índice de tools para Entrada/ (best-effort).
+
+    Sin esto, borrar un adjunto lo deja visible hasta 15 minutos: la lista
+    de recientes se sirve desde el índice en memoria, no del filesystem.
+    """
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=settings.tools_timeout) as client:
+            await client.post(
+                f"{settings.tools_url}/nas/refresh",
+                params={"subruta": settings.nas_inbox_rel.strip("/")},
+                headers=_tools_headers(),
+            )
+    except Exception:  # noqa: BLE001 - best-effort, nunca rompe la operación
+        log.warning("no se pudo refrescar el índice NAS")
 
 
 async def _tools_json(endpoint: str, params: dict | None = None) -> dict:
@@ -1175,7 +1185,12 @@ def _marcar_borrables(payload: dict, clave: str) -> dict:
     prefijo = get_settings().nas_inbox_rel.strip("/") + "/"
     for item in payload.get(clave) or []:
         if isinstance(item, dict):
-            item["deletable"] = str(item.get("path", "")).startswith(prefijo)
+            ruta = str(item.get("path", ""))
+            borrable = ruta.startswith(prefijo)
+            item["deletable"] = borrable
+            if borrable:
+                resto = ruta[len(prefijo) :]
+                item["folder"] = resto.rsplit("/", 1)[0] if "/" in resto else ""
     return payload
 
 
@@ -1304,6 +1319,10 @@ async def delete_file(path: str = Query(min_length=1, max_length=500)) -> dict:
         destino.unlink()
     except OSError as exc:
         raise HTTPException(500, f"No se pudo borrar: {exc}") from exc
+
+    # Refrescar el índice antes de responder: si no, la lista de recientes
+    # sigue devolviendo el archivo borrado hasta el próximo re-escaneo.
+    await _refrescar_indice_nas()
 
     log.info("adjunto borrado de la NAS: %s", relativa)
     return {"ok": True, "path": relativa}

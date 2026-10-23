@@ -12,6 +12,7 @@ from __future__ import annotations
 import types
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app import main
@@ -203,6 +204,41 @@ def test_borra_un_adjunto_en_subcarpeta(browser, tmp_path) -> None:
     respuesta = browser.delete(f"/api/files?path={subido['path']}")
     assert respuesta.status_code == 200, respuesta.text
     assert not guardado.exists()
+
+
+def test_borrar_refresca_el_indice(browser, tmp_path, monkeypatch) -> None:
+    """El DELETE invalida el índice antes de responder.
+
+    Sin esto, la lista de recientes (que se sirve del índice en memoria)
+    seguiría mostrando el archivo borrado hasta 15 minutos.
+    """
+    llamadas: list[tuple[str, str]] = []
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        llamadas.append((request.method, str(request.url)))
+        return httpx.Response(200, json={"ok": True})
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", factory)
+
+    subido = browser.post(
+        "/api/files/upload",
+        files={"file": ("borrar.txt", b"x", "text/plain")},
+    ).json()
+    llamadas.clear()
+
+    respuesta = browser.delete(f"/api/files?path={subido['path']}")
+    assert respuesta.status_code == 200, respuesta.text
+    assert any(
+        metodo == "POST"
+        and "/nas/refresh" in url
+        and "subruta=files%2FEntrada" in url
+        for metodo, url in llamadas
+    ), llamadas
 
 
 def test_no_borra_fuera_de_entrada(browser, tmp_path) -> None:

@@ -3052,6 +3052,19 @@ body.modal-open .tabbar {
   font-size: 13px;
 }
 
+.nas-inbox-link {
+  width: calc(100% - 8px);
+  margin: 2px 4px 10px;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.nas-inbox-link svg {
+  width: 17px;
+  height: 17px;
+}
+
 .nas-error {
   margin: 8px 4px;
   color: var(--danger);
