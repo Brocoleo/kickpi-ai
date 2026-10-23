@@ -83,6 +83,8 @@ export type SystemStats = {
   boot_time: number;
 };
 
+
+
 export type DiskInfo = {
   mount: string;
   total_bytes: number;

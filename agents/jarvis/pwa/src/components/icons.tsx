@@ -28,14 +28,6 @@ export function ChatIcon(props: IconProps) {
   );
 }
 
-export function PulseIcon(props: IconProps) {
-  return (
-    <Base {...props}>
-      <path d="M3 12h4l2.5-7 4 14L16 12h5" />
-    </Base>
-  );
-}
-
 export function FolderIcon(props: IconProps) {
   return (
     <Base {...props}>
@@ -215,10 +207,3 @@ export function FileIcon(props: IconProps) {
   );
 }
 
-export function ChevronLeftIcon(props: IconProps) {
-  return (
-    <Base {...props}>
-      <path d="m14 6-6 6 6 6" />
-    </Base>
-  );
-}

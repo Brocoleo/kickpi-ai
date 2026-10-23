@@ -92,6 +92,21 @@ function mutate<T>(path: string, body?: unknown, csrfToken?: string | null): Pro
   });
 }
 
+// ChatStreamDone, UploadFailure, UploadBatchItem eliminados (no usados)
+
+
+export type NasConfig = {
+  /** Ruta del inbox relativa a la raíz del NAS (solo lectura). */
+  inbox: string;
+  /** Ruta absoluta en el host (solo lectura). */
+  inbox_dir: string;
+  upload_max_mb: number;
+  upload_rate_per_min: number;
+  /** Reglas de clasificación vigentes; null = las de fábrica. */
+  classifier_rules: Record<string, unknown> | null;
+};
+
+/** Evento final de streaming. */
 export type ChatStreamDone = {
   conversation_id: string;
   reply: string;
@@ -103,17 +118,6 @@ export type ChatStreamDone = {
   tools_count?: number;
   /** El turno se cortó a propósito: el texto es parcial, no una respuesta. */
   interrupted?: boolean;
-};
-
-export type NasConfig = {
-  /** Ruta del inbox relativa a la raíz del NAS (solo lectura). */
-  inbox: string;
-  /** Ruta absoluta en el host (solo lectura). */
-  inbox_dir: string;
-  upload_max_mb: number;
-  upload_rate_per_min: number;
-  /** Reglas de clasificación vigentes; null = las de fábrica. */
-  classifier_rules: Record<string, unknown> | null;
 };
 
 export type UploadResult = {
@@ -128,13 +132,11 @@ export type UploadResult = {
 };
 
 /** Un archivo que el lote rechazó; el resto del lote sigue su curso. */
-export type UploadFailure = {
-  ok: false;
-  name: string;
-  error: string;
-};
 
-export type UploadBatchItem = UploadResult | UploadFailure;
+
+
+/** Un archivo OK o fallido dentro de un lote. */
+export type UploadBatchItem = UploadResult | { ok: false; name: string; error: string };
 
 export type UploadBatchResult = {
   /** true solo si TODOS los archivos del lote se guardaron. */

@@ -19,3 +19,7 @@ venv/
 agent/static/
 pwa/node_modules/
 pwa/dist/
+
+# graphify output
+agent/graphify-out/
+tools/graphify-out/
