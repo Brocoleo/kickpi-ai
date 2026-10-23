@@ -26,7 +26,7 @@ const ME = {
   method: "session" as const,
   password_configured: true,
   session_ttl_days: 30,
-  version: "0.19.1",
+  version: "0.20.0",
 };
 
 const CONFIG = {

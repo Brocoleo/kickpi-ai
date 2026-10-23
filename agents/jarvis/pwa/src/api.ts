@@ -449,6 +449,21 @@ export const api = {
       download ? "&download=true" : ""
     }`,
 
+  /**
+   * Prepara la descarga ZIP de una selección y devuelve un ticket.
+   *
+   * El enlace resultante es de un solo uso y caduca en 2 minutos; se navega a
+   * él para que Safari lo guarde como descarga (sin `blob` en memoria).
+   */
+  nasZipTicket: (paths: string[], csrfToken: string | null) =>
+    mutate<{ id: string; count: number; expires_in: number }>(
+      "/nas/zip",
+      { paths },
+      csrfToken,
+    ),
+
+  nasZipUrl: (id: string) => `/api/nas/zip/${encodeURIComponent(id)}`,
+
   /** Borra un adjunto de Entrada/ (sesión humana + CSRF). */
   /** Ajustes del NAS (sesión de navegador; no acepta el token de API). */
   nasConfig: () => request<NasConfig>("/admin/nas"),

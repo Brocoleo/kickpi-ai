@@ -38,7 +38,7 @@ services:
 
   jarvis-tools:
     build: ./tools
-    image: jarvis-tools:0.3
+    image: jarvis-tools:0.4
     container_name: jarvis-tools
     restart: unless-stopped
     depends_on:
@@ -120,7 +120,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.19.1
+    image: jarvis-agent:0.20.0
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:

@@ -95,6 +95,13 @@ desde FileBrowser **sin login** y **sin poder modificarlo**:
   `Entrada/`. FileBrowser no tiene botón de subida. Los adjuntos propios se
   pueden borrar desde la PWA (`DELETE /api/files?path=…`), siempre con
   confirmación, sesión y CSRF, y **solo** dentro de `Entrada/`.
+- **Bajar varios a la vez**: la pestaña Archivos → vista nativa (Recientes,
+  Explorar o Búsqueda) tiene «Seleccionar» + «Descargar ZIP». El POST deja
+  la lista en memoria y devuelve un ticket de un solo uso (2 min): el
+  navegador navega a una URL corta (100 rutas no caben en una URL) y Safari
+  lo guarda sin cargar 700 MB en RAM. El ZIP se emite en streaming y sin
+  comprimir (fotos/vídeos ya vienen comprimidos). FileBrowser no tiene
+  selección múltiple; para eso está la vista nativa.
 - **Marca y tema**: `deploy/filebrowser/{config.yaml,jarvis.css}` (nombre
   «Jarvis · NAS», fondo `#07090d`, acento turquesa). Se sincronizan en cada
   `./deploy-all.sh` junto al resto del código.
@@ -579,6 +586,8 @@ o **token de API**.
 | GET | `/api/nas/recent` | Últimos archivos (`?limit=30&path=`) |
 | GET | `/api/nas/search` | Busca (`?q=&content=&limit=`); el agente añade el token de tools |
 | GET | `/api/nas/file` | Miniatura/descarga de un archivo (`?path=&download=`), solo lectura |
+| POST | `/api/nas/zip` | Prepara una descarga ZIP (`{"paths": [...]}`) → ticket de un solo uso (sesión + CSRF) |
+| GET | `/api/nas/zip/{ticket}` | Sirve el ZIP en streaming (2 min, un solo uso) |
 | GET | `/api/nas/status` | Estado del índice (archivos, antigüedad, caché) |
 | GET | `/api/tools` | Herramientas permitidas |
 | POST | `/api/tools/{name}` | Invoca una herramienta (widgets) |

@@ -119,3 +119,83 @@ def test_nas_propaga_404_de_tools(client, monkeypatch) -> None:
         "/api/nas/list?path=no-existe", headers={"X-API-Token": API_TOKEN}
     )
     assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Descarga ZIP de una selección (ticket de un solo uso)
+# --------------------------------------------------------------------------- #
+def test_nas_zip_exige_autenticacion(client) -> None:
+    assert client.post("/api/nas/zip", json={"paths": ["files/a.jpg"]}).status_code == 401
+    assert client.get("/api/nas/zip/cualquier-cosa").status_code == 401
+
+
+def test_nas_zip_prepara_y_sirve_una_vez(browser, monkeypatch) -> None:
+    visto: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        visto["paths"] = request.url.params.get_list("path")
+        visto["ruta"] = request.url.path
+        # El ZIP se sirve en streaming: el mock debe devolver un stream (con
+        # `content=` httpx lo marca como ya consumido al usar `stream=True`).
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/zip",
+                "content-disposition": 'attachment; filename="jarvis.zip"',
+            },
+            stream=httpx.ByteStream(b"PK\x03\x04datos"),
+        )
+
+    _install_transport(monkeypatch, handler)
+    rutas = [
+        "files/Entrada/Fotos/a.jpg",
+        "files/Entrada/Fotos/b.jpg",
+    ]
+
+    alta = browser.post("/api/nas/zip", json={"paths": rutas})
+    assert alta.status_code == 200, alta.text
+    ticket = alta.json()
+    assert ticket["count"] == 2
+    assert ticket["expires_in"] > 0
+
+    descarga = browser.get(f"/api/nas/zip/{ticket['id']}")
+    assert descarga.status_code == 200, descarga.text
+    assert descarga.content == b"PK\x03\x04datos"
+    assert "attachment" in descarga.headers["content-disposition"]
+    assert visto["ruta"] == "/nas/zip"
+    assert visto["paths"] == rutas
+    assert descarga.headers["cache-control"] == "no-store"
+
+    # Un ticket se consume: el enlace no se puede compartir ni repetir.
+    assert browser.get(f"/api/nas/zip/{ticket['id']}").status_code == 404
+
+
+def test_nas_zip_rechaza_seleccion_vacia(browser) -> None:
+    assert browser.post("/api/nas/zip", json={"paths": []}).status_code == 422
+    vacia = browser.post("/api/nas/zip", json={"paths": ["  ", ""]})
+    assert vacia.status_code == 400
+    assert "al menos un archivo" in vacia.json()["detail"]
+
+
+def test_nas_zip_ticket_caducado(browser) -> None:
+    ticket = browser.post(
+        "/api/nas/zip", json={"paths": ["files/a.jpg"]}
+    ).json()["id"]
+    # Forzar la caducidad sin esperar dos minutos.
+    main._zip_tickets[ticket] = (0.0, ("files/a.jpg",))
+
+    resp = browser.get(f"/api/nas/zip/{ticket}")
+    assert resp.status_code == 404
+    assert "caducó" in resp.json()["detail"]
+
+
+def test_nas_zip_propaga_el_rechazo_de_tools(browser, monkeypatch) -> None:
+    _install_transport(
+        monkeypatch, lambda request: httpx.Response(413, json={"detail": "pesa"})
+    )
+    ticket = browser.post(
+        "/api/nas/zip", json={"paths": ["files/a.jpg"]}
+    ).json()["id"]
+    resp = browser.get(f"/api/nas/zip/{ticket}")
+    assert resp.status_code == 413
+    assert "demasiado grande" in resp.json()["detail"].lower()

@@ -5,12 +5,13 @@ Todos los endpoints (salvo /health) exigen el token interno
 """
 import hmac
 import logging
+import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from . import docker_api, nas_index, system_api
+from . import docker_api, nas_index, nas_zip, system_api
 from .config import get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -194,6 +195,43 @@ def nas_file(
         headers={
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, max-age=60",
+        },
+    )
+
+
+@app.get("/nas/zip", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_zip_download(
+    path: list[str] = Query(
+        min_length=1,
+        max_length=500,
+        description="Archivos relativos al NAS (repetir el parámetro)",
+    ),
+) -> StreamingResponse:
+    """Empaqueta varios archivos en un ZIP, sin temporal en disco.
+
+    Todo se valida ANTES de emitir el primer byte: si una ruta es inválida o
+    falta un archivo, la respuesta es 400/404 y el navegador no baja un ZIP
+    roto. El tamaño total también se comprueba aquí (413).
+    """
+    settings = get_settings()
+    try:
+        rutas = nas_zip.preparar(
+            path,
+            _INDEX.archivo,
+            max_files=settings.nas_zip_max_files,
+            max_mb=settings.nas_zip_max_mb,
+        )
+    except nas_zip.ErrorZip as exc:
+        raise HTTPException(exc.codigo, str(exc)) from exc
+
+    nombre = time.strftime("jarvis-%Y%m%d-%H%M.zip")
+    return StreamingResponse(
+        nas_zip.iter_zip(rutas),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{nombre}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
         },
     )
 

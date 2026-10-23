@@ -76,6 +76,9 @@ function Archivo({
   confirmando,
   onConfirmar,
   onCancelar,
+  seleccionable,
+  seleccionado,
+  onAlternar,
 }: {
   item: NasEntry;
   onAbrir: (item: NasEntry) => void;
@@ -83,15 +86,29 @@ function Archivo({
   confirmando?: boolean;
   onConfirmar?: () => void;
   onCancelar?: () => void;
+  /** Modo selección: el toque marca en vez de abrir. */
+  seleccionable?: boolean;
+  seleccionado?: boolean;
+  onAlternar?: () => void;
 }) {
   const imagen = esImagen(item);
   return (
-    <div className="nas-file">
+    <div
+      className={`nas-file${seleccionado ? " marcado" : ""}`}
+    >
       <button
         type="button"
-        className="nas-file-main"
-        onClick={() => onAbrir(item)}
+        className={`nas-file-main${seleccionable ? " seleccionable" : ""}`}
+        onClick={() =>
+          seleccionable && onAlternar ? onAlternar() : onAbrir(item)
+        }
+        aria-pressed={seleccionable ? Boolean(seleccionado) : undefined}
       >
+        {seleccionable && (
+          <span className={`nas-check${seleccionado ? " on" : ""}`} aria-hidden="true">
+            {seleccionado ? "✓" : ""}
+          </span>
+        )}
         {imagen ? (
           <img
             className="nas-thumb"
@@ -115,7 +132,7 @@ function Archivo({
         </span>
       </button>
       <div className="nas-file-actions">
-        {onBorrar && !confirmando && (
+        {!seleccionable && onBorrar && !confirmando && (
           <button
             type="button"
             className="icon-btn nas-download"
@@ -150,6 +167,7 @@ function Archivo({
           download={item.name}
           aria-label={`Descargar ${item.name}`}
           title="Descargar"
+          hidden={seleccionable}
         >
           <ExternalIcon />
         </a>
@@ -180,6 +198,13 @@ export function Files({
   const [ocultos, setOcultos] = useState<string[]>([]);
   const [inbox, setInbox] = useState("files/Entrada");
   const [frameListo, setFrameListo] = useState(false);
+  // Selección múltiple para bajar varios archivos en un ZIP. Las rutas se
+  // acumulan entre vistas (puedes marcar en Recientes y en Explorar).
+  const [modoSeleccion, setModoSeleccion] = useState(false);
+  const [seleccion, setSeleccion] = useState<string[]>([]);
+  const [descargando, setDescargando] = useState(false);
+  // Confirmación de la descarga (no es un error: se muestra en gris).
+  const [aviso, setAviso] = useState<string | null>(null);
   const portainer = portainerUrl();
 
   const gestionarError = useCallback(
@@ -349,6 +374,51 @@ export function Files({
     setVista("filebrowser");
   }, []);
 
+  const alternarSeleccion = useCallback((item: NasEntry) => {
+    setSeleccion((prev) =>
+      prev.includes(item.path)
+        ? prev.filter((ruta) => ruta !== item.path)
+        : [...prev, item.path],
+    );
+  }, []);
+
+  const salirSeleccion = useCallback(() => {
+    setModoSeleccion(false);
+    setSeleccion([]);
+  }, []);
+
+  /**
+   * Descarga en ZIP: el POST prepara el enlace (la URL no puede llevar 100
+   * rutas) y se navega a un enlace de un solo uso. Safari lo guarda como
+   * descarga; no hay `blob` en memoria (700 MB en un iPhone = pestaña muerta).
+   */
+  const descargarZip = useCallback(async () => {
+    if (!seleccion.length) return;
+    setDescargando(true);
+    setError(null);
+    try {
+      const { id, count } = await api.nasZipTicket(seleccion, csrfToken);
+      const enlace = document.createElement("a");
+      enlace.href = api.nasZipUrl(id);
+      enlace.download = `jarvis-${new Date().toISOString().slice(0, 10)}.zip`;
+      enlace.rel = "noopener";
+      document.body.appendChild(enlace);
+      enlace.click();
+      enlace.remove();
+      // El ticket ya está consumido por la navegación: no se puede reusar.
+      setSeleccion([]);
+      setModoSeleccion(false);
+      setAviso(
+        `Preparando ${count} archivo${count === 1 ? "" : "s"} en un ZIP: la ` +
+          "descarga aparece en la barra de Safari",
+      );
+    } catch (err) {
+      gestionarError(err);
+    } finally {
+      setDescargando(false);
+    }
+  }, [seleccion, csrfToken, gestionarError]);
+
   const partes = ruta ? ruta.split("/") : [];
   const visible = (item: NasEntry) => !ocultos.includes(item.path);
   const archivosExplorar = (listado?.files ?? []).filter(visible);
@@ -356,6 +426,25 @@ export function Files({
   const resultadosVisibles = (resultados?.results ?? []).filter(visible);
   const archivosVista =
     vista === "buscar" ? resultadosVisibles : recientesVisibles;
+  // Archivos que se ven ahora: «Todos» actúa sobre esta lista, no sobre el NAS.
+  const visiblesAhora =
+    vista === "explorar" ? archivosExplorar : archivosVista;
+  const todosSeleccionados =
+    visiblesAhora.length > 0 &&
+    visiblesAhora.every((item) => seleccion.includes(item.path));
+
+  const alternarTodos = () => {
+    if (todosSeleccionados) {
+      const quitar = new Set(visiblesAhora.map((item) => item.path));
+      setSeleccion((prev) => prev.filter((ruta) => !quitar.has(ruta)));
+      return;
+    }
+    setSeleccion((prev) => {
+      const ya = new Set(prev);
+      for (const item of visiblesAhora) ya.add(item.path);
+      return [...ya];
+    });
+  };
   const totalCoincidencias = resultados
     ? Math.max(
         0,
@@ -382,11 +471,42 @@ export function Files({
         }
       : {};
 
+  /** En modo selección el toque marca; fuera de él, el chip abre/borra. */
+  const propsArchivo = (item: NasEntry) =>
+    modoSeleccion
+      ? {
+          seleccionable: true,
+          seleccionado: seleccion.includes(item.path),
+          onAlternar: () => alternarSeleccion(item),
+        }
+      : acciones(item);
+
   return (
     <div className="screen files-screen">
       <div className="screen-head">
         <h1 className="screen-title">Archivos</h1>
         <div className="head-meta">
+          {vista !== "filebrowser" &&
+            (modoSeleccion ? (
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={salirSeleccion}
+              >
+                Cancelar
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setAviso(null);
+                  setModoSeleccion(true);
+                }}
+              >
+                Seleccionar
+              </button>
+            ))}
           <button
             type="button"
             className="icon-btn"
@@ -492,6 +612,7 @@ export function Files({
       )}
 
       {error && <p className="nas-error">{error}</p>}
+      {aviso && <p className="nas-status">{aviso}</p>}
       {cargando && <p className="nas-status">Cargando…</p>}
 
       {vista === "explorar" && listado && !cargando && (
@@ -515,7 +636,7 @@ export function Files({
           {archivosExplorar.length > 0 && (
             <div className="nas-list">
               {archivosExplorar.map((item) => (
-                <Archivo key={item.path} item={item} onAbrir={abrir} {...acciones(item)} />
+                <Archivo key={item.path} item={item} onAbrir={abrir} {...propsArchivo(item)} />
               ))}
             </div>
           )}
@@ -540,7 +661,7 @@ export function Files({
           ) : (
             <div className="nas-list">
               {archivosVista.map((item) => (
-                <Archivo key={item.path} item={item} onAbrir={abrir} {...acciones(item)} />
+                <Archivo key={item.path} item={item} onAbrir={abrir} {...propsArchivo(item)} />
               ))}
             </div>
           )}
@@ -561,7 +682,7 @@ export function Files({
             <div className="nas-list">
               {resultadosVisibles.map((item) => (
                 <div key={item.path} className="nas-file-wrap">
-                  <Archivo item={item} onAbrir={abrir} {...acciones(item)} />
+                  <Archivo item={item} onAbrir={abrir} {...propsArchivo(item)} />
                   {item.snippet && <p className="nas-snippet">{item.snippet}</p>}
                   {item.match === "contenido" && (
                     <span className="nas-badge">coincide en el contenido</span>
@@ -582,6 +703,34 @@ export function Files({
               title="FileBrowser: archivos del NAS"
             />
           )}
+        </div>
+      )}
+
+      {modoSeleccion && vista !== "filebrowser" && (
+        <div className="nas-selectbar" role="region" aria-label="Descarga en lote">
+          <span className="nas-select-count">
+            {seleccion.length === 0
+              ? "Toca para marcar archivos"
+              : `${seleccion.length} seleccionado${
+                  seleccion.length === 1 ? "" : "s"
+                }`}
+          </span>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={alternarTodos}
+            disabled={!visiblesAhora.length}
+          >
+            {todosSeleccionados ? "Ninguno" : "Todos"}
+          </button>
+          <button
+            type="button"
+            className="btn primary small"
+            onClick={() => void descargarZip()}
+            disabled={!seleccion.length || descargando}
+          >
+            {descargando ? "Preparando…" : "Descargar ZIP"}
+          </button>
         </div>
       )}
 

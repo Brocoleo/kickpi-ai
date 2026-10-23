@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     nas_index_cache: str = "/data/nas-index.json"
     # Tope para servir un archivo por la API (miniaturas y descargas).
     nas_file_max_mb: int = 25
+    # Descarga en lote: 100 fotos de un móvil son ~700 MB y 100 entradas.
+    nas_zip_max_files: int = 200
+    nas_zip_max_mb: int = 2048
 
 
 @lru_cache

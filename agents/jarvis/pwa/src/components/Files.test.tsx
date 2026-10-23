@@ -17,6 +17,8 @@ const apiMock = vi.hoisted(() => ({
   nasFileUrl: vi.fn(
     (path: string) => `/api/nas/file?path=${encodeURIComponent(path)}`,
   ),
+  nasZipTicket: vi.fn(),
+  nasZipUrl: vi.fn((id: string) => `/api/nas/zip/${id}`),
 }));
 
 vi.mock("../api", async () => {
@@ -40,6 +42,12 @@ describe("Files · panel NAS nativo", () => {
     apiMock.nasSearch.mockReset();
     apiMock.nasStatus.mockReset();
     apiMock.deleteNasFile.mockReset();
+    apiMock.nasZipTicket.mockReset();
+    apiMock.nasZipTicket.mockResolvedValue({
+      id: "ticket-1",
+      count: 1,
+      expires_in: 120,
+    });
     apiMock.nasStatus.mockResolvedValue({
       inbox: "files/Entrada",
       ready: true,
@@ -157,6 +165,55 @@ describe("Files · panel NAS nativo", () => {
 
     await screen.findByText("foto.jpg");
     expect(screen.getByText(/Fotos · 2 KB/)).toBeInTheDocument();
+  });
+
+
+  it("marca varios archivos y pide el ZIP (enlace de un solo uso)", async () => {
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    render(<Files csrfToken="csrf-1" onUnauthorized={() => {}} />);
+    await screen.findByText("foto.jpg");
+
+    await userEvent.click(screen.getByRole("button", { name: "Seleccionar" }));
+    // En modo selección el toque marca; NO abre el visor.
+    await userEvent.click(screen.getByText("foto.jpg").closest("button")!);
+    expect(screen.getByText("1 seleccionado")).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Descargar ZIP" }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.nasZipTicket).toHaveBeenCalledWith(
+        ["files/Entrada/Fotos/foto.jpg"],
+        "csrf-1",
+      ),
+    );
+    expect(apiMock.nasZipUrl).toHaveBeenCalledWith("ticket-1");
+    expect(click).toHaveBeenCalledTimes(1);
+    // Se sale del modo selección y se avisa de dónde aparece la descarga.
+    expect(
+      await screen.findByText(/Preparando 1 archivo en un ZIP/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Seleccionar" }),
+    ).toBeInTheDocument();
+
+    click.mockRestore();
+  });
+
+  it("«Todos» marca lo visible y «Ninguno» lo desmarca", async () => {
+    render(<Files csrfToken="csrf-1" onUnauthorized={() => {}} />);
+    await screen.findByText("foto.jpg");
+
+    await userEvent.click(screen.getByRole("button", { name: "Seleccionar" }));
+    await userEvent.click(screen.getByRole("button", { name: "Todos" }));
+    expect(screen.getByText("1 seleccionado")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Ninguno" }));
+    expect(screen.getByText("Toca para marcar archivos")).toBeInTheDocument();
   });
 
   it("lleva a las carpetas de Entrada desde Recientes", async () => {

@@ -64,7 +64,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.19.1"
+VERSION = "0.20.0"
 
 # Extensiones que no se aceptan como adjuntos. No se ejecutan en el servidor,
 # pero la NAS no debe convertirse en un depósito de programas descargables.
@@ -1455,6 +1455,131 @@ async def nas_file(
         k: v for k, v in upstream.headers.items() if k.lower() in permitidas
     }
     headers["Cache-Control"] = "private, max-age=60"
+
+    async def limpiar() -> None:
+        await upstream.aclose()
+        await client.aclose()
+
+    return StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        headers=headers,
+        background=BackgroundTask(limpiar),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Descarga ZIP de una selección
+# --------------------------------------------------------------------------- #
+# El navegador no puede llevar 100 rutas en la URL: la línea de petición tiene
+# tope (~8-16 KB) y una selección de fotos lo pasa. Por eso el POST deja la
+# lista en memoria y devuelve un ticket; el GET (una navegación normal, que
+# Safari convierte en descarga) usa una URL corta, de un solo uso y caducable.
+_ZIP_TTL_S = 120
+_ZIP_MAX_TICKETS = 20
+_ZIP_MAX_ARCHIVOS = 200
+# Single-thread event loop: el dict se toca sin await de por medio, sin locks.
+_zip_tickets: dict[str, tuple[float, tuple[str, ...]]] = {}
+
+
+def _crear_ticket_zip(rutas: list[str]) -> str:
+    """Aparta las rutas y devuelve el ticket (podando caducados y exceso)."""
+    ahora = time.time()
+    for clave, (vence, _) in list(_zip_tickets.items()):
+        if vence <= ahora:
+            del _zip_tickets[clave]
+    while len(_zip_tickets) >= _ZIP_MAX_TICKETS:
+        del _zip_tickets[next(iter(_zip_tickets))]
+    ticket = uuid.uuid4().hex
+    _zip_tickets[ticket] = (ahora + _ZIP_TTL_S, tuple(rutas))
+    return ticket
+
+
+def _tomar_ticket_zip(ticket: str) -> tuple[str, ...] | None:
+    """Consume el ticket: aunque se pida dos veces, solo la primera descarga."""
+    dato = _zip_tickets.pop(ticket, None)
+    if not dato:
+        return None
+    vence, rutas = dato
+    if vence <= time.time():
+        return None
+    return rutas
+
+
+class ZipRequest(BaseModel):
+    """Selección del usuario (rutas relativas al NAS)."""
+
+    paths: list[str] = Field(min_length=1, max_length=_ZIP_MAX_ARCHIVOS)
+
+
+@app.post(
+    "/api/nas/zip",
+    tags=["nas"],
+    dependencies=[Depends(require_human_mutation)],
+)
+async def nas_zip_ticket(payload: ZipRequest) -> dict:
+    """Prepara una descarga en lote y devuelve el enlace de un solo uso."""
+    rutas = [ruta.strip() for ruta in payload.paths if ruta.strip()]
+    if not rutas:
+        raise HTTPException(400, "Selecciona al menos un archivo")
+    return {
+        "id": _crear_ticket_zip(rutas),
+        "count": len(rutas),
+        "expires_in": _ZIP_TTL_S,
+    }
+
+
+@app.get(
+    "/api/nas/zip/{ticket}",
+    tags=["nas"],
+    dependencies=[Depends(require_auth)],
+)
+async def nas_zip_download(ticket: str) -> Response:
+    """Sirve el ZIP de la selección (streaming, sin pasar por el disco)."""
+    rutas = _tomar_ticket_zip(ticket)
+    if not rutas:
+        raise HTTPException(
+            404,
+            "El enlace de descarga caducó o ya se usó: vuelve a seleccionar "
+            "los archivos",
+        )
+
+    settings = get_settings()
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=5.0)
+    )
+    solicitud = client.build_request(
+        "GET",
+        f"{settings.tools_url}/nas/zip",
+        params=[("path", ruta) for ruta in rutas],
+        headers=_tools_headers(),
+    )
+    try:
+        upstream = await client.send(solicitud, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(502, f"No se pudo preparar la descarga: {exc}") from exc
+    if upstream.status_code >= 400:
+        codigo = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        detalle = {
+            400: "Alguna ruta de la selección no es válida",
+            404: "Alguno de los archivos ya no existe",
+            413: "La selección es demasiado grande; elige menos archivos",
+        }.get(codigo, "No se pudo preparar la descarga")
+        raise HTTPException(codigo if codigo in (400, 404, 413) else 502, detalle)
+
+    permitidas = {
+        "content-type",
+        "content-disposition",
+        "x-content-type-options",
+        "cache-control",
+    }
+    headers = {
+        k: v for k, v in upstream.headers.items() if k.lower() in permitidas
+    }
+    headers["Cache-Control"] = "no-store"
 
     async def limpiar() -> None:
         await upstream.aclose()
