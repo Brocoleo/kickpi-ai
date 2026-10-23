@@ -1070,6 +1070,19 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
 
     relativa = f"{inbox.name}/{nombre}"
     log.info("adjunto guardado en la NAS: %s (%d bytes)", relativa, tamano)
+
+    # Invalidar la caché del índice para la carpeta Entrada, de modo que
+    # búsquedas posteriores vean el archivo al instante (sin esperar 15 min).
+    try:
+        async with httpx.AsyncClient(timeout=settings.tools_timeout) as client:
+            await client.post(
+                f"{settings.tools_url}/nas/refresh",
+                params={"subruta": "files/Entrada"},
+                headers=_tools_headers(),
+            )
+    except Exception:  # noqa: BLE001 - best-effort, no romper la subida si falla
+        log.warning("no se pudo refrescar el índice NAS tras la subida")
+
     return {
         "ok": True,
         "path": relativa,

@@ -124,6 +124,55 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "nas_list",
+            "description": (
+                "Lista una carpeta de la NAS (carpetas primero, luego "
+                "archivos). Lectura VIVA del filesystem (sin índice), así que "
+                "aparecen archivos recién subidos y carpetas vacías. Úsala "
+                "para ver el contenido de una carpeta concreta o confirmar "
+                "metadatos de un adjunto reciente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Carpeta relativa dentro de la NAS (vacío = raíz)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Máximo de entradas (1-1000, por defecto 300)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "nas_refresh",
+            "description": (
+                "Invalida y re-escanea parte del índice de la NAS. Úsala "
+                "tras subir un archivo al chat (ya confirmado por el backend) "
+                "para que búsquedas posteriores lo vean al instante. "
+                "Por defecto refresca 'files/Entrada' (la carpeta de adjuntos)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subruta": {
+                        "type": "string",
+                        "description": "Subcarpeta a refrescar (por defecto 'files/Entrada')",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 _ENDPOINTS = {
@@ -133,6 +182,8 @@ _ENDPOINTS = {
     "container_logs": "/docker/logs/{name}",
     "nas_search": "/nas/search",
     "nas_recent": "/nas/recent",
+    "nas_list": "/nas/list",
+    "nas_refresh": "/nas/refresh",
 }
 
 
@@ -164,6 +215,13 @@ async def call_tool(name: str, arguments: dict | None = None) -> dict:
             params["limit"] = arguments["limit"]
         if arguments.get("path"):
             params["path"] = arguments["path"]
+    elif name == "nas_list":
+        if "limit" in arguments:
+            params["limit"] = arguments["limit"]
+        if arguments.get("path"):
+            params["path"] = arguments["path"]
+    elif name == "nas_refresh":
+        params["subruta"] = arguments.get("subruta", "files/Entrada")
 
     settings = get_settings()
     headers = {"X-Tools-Token": settings.tools_token}

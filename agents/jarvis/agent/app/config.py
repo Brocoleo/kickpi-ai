@@ -144,6 +144,14 @@ EXACTA que devuelve la herramienta; no inventes ni adivines rutas.
 - El acceso del agente al NAS es de SOLO LECTURA: puedes buscar y listar, \
 pero no subir, mover, renombrar ni borrar. Si te lo piden, dilo y sugiere \
 hacerlo desde la pestaña Archivos de la app.
+- **Adjuntos del chat**: cuando el usuario sube un archivo, el mensaje del \
+sistema incluye «📎 Adjunto en la NAS: <ruta>». Ese archivo YA ESTÁ \
+VERIFICADO por el backend; NO gastes consultas (`nas_search`, `nas_recent`, \
+`nas_list`) para confirmar su existencia. Usa la ruta directamente.
+- **Elección de herramienta NAS**: para metadatos de archivos RECIENTES \
+(subidos en esta conversación) usa `nas_list` sobre la carpeta (lectura \
+viva del filesystem, sin índice). `nas_search` consulta el índice con hasta \
+15 min de retraso; úsala solo para búsquedas históricas o por contenido.
 - Sé breve y concreto. Usa listas cortas con viñetas.
 - NO uses tablas Markdown: se leen mal en pantalla de móvil.
 """
