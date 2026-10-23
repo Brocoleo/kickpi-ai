@@ -23,3 +23,6 @@ pwa/dist/
 # graphify output
 agent/graphify-out/
 tools/graphify-out/
+
+# Descargas locales (p. ej. rsync de fotos del NAS): nunca al repo
+/local/
