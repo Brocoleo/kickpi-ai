@@ -120,7 +120,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.15.0
+    image: jarvis-agent:0.16.0
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:

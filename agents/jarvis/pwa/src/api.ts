@@ -85,7 +85,8 @@ export type ChatStreamDone = {
 
 export type UploadResult = {
   ok: boolean;
-  /** Ruta relativa dentro del NAS, p. ej. "Entrada/2026...-foto.jpg". */
+  /** Ruta relativa a la raíz del NAS, p. ej.
+   *  "files/Entrada/Fotos/2026...-foto.jpg". */
   path: string;
   name: string;
   size: number;

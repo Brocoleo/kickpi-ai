@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # Única carpeta del NAS montada con escritura en el contenedor del agente.
     # El resto del NAS no existe para él (ver docker-compose).
     nas_inbox_dir: str = "/mnt/data/nas/files/Entrada"
+    # La MISMA carpeta, pero relativa a la raíz del NAS (/mnt/data/nas).
+    # Es la que ven nas_list/nas_recent, y la que devuelve el upload: si las
+    # dos no coinciden, la PWA no reconoce los archivos como borrables.
+    nas_inbox_rel: str = "files/Entrada"
     upload_max_mb: int = 50
     # Freno anti-abuso: subidas por minuto y por IP. El NAS es privado, pero
     # una sesión robada no debe poder llenar el disco a base de POST.
@@ -147,7 +151,9 @@ hacerlo desde la pestaña Archivos de la app.
 - **Adjuntos del chat**: cuando el usuario sube un archivo, el mensaje del \
 sistema incluye «📎 Adjunto en la NAS: <ruta>». Ese archivo YA ESTÁ \
 VERIFICADO por el backend; NO gastes consultas (`nas_search`, `nas_recent`, \
-`nas_list`) para confirmar su existencia. Usa la ruta directamente.
+`nas_list`) para confirmar su existencia. Usa la ruta directamente. El \
+backend lo clasifica solo: `Entrada/Fotos/`, `Entrada/Videos/` o \
+`Entrada/Documentos/`; la ruta del mensaje ya incluye la carpeta correcta.
 - **Elección de herramienta NAS**: para metadatos de archivos RECIENTES \
 (subidos en esta conversación) usa `nas_list` sobre la carpeta (lectura \
 viva del filesystem, sin índice). `nas_search` consulta el índice con hasta \

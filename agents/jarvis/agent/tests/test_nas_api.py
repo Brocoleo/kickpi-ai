@@ -43,26 +43,44 @@ def test_nas_list_reenvia_ruta_y_parametros(client, monkeypatch) -> None:
             200,
             json={
                 "ready": True,
-                "path": "Entrada",
+                "path": "files/Entrada",
                 "parent": "",
                 "dirs": [],
-                "files": [{"name": "foto.jpg", "path": "Entrada/foto.jpg"}],
+                "files": [
+                    {"name": "foto.jpg", "path": "files/Entrada/Fotos/foto.jpg"},
+                    {"name": "informe.pdf", "path": "files/Documentos/informe.pdf"},
+                ],
                 "error": None,
             },
         )
 
     _install_transport(monkeypatch, handler)
     resp = client.get(
-        "/api/nas/list?path=Entrada&limit=10",
+        "/api/nas/list?path=files/Entrada&limit=10",
         headers={"X-API-Token": API_TOKEN},
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["files"][0]["path"] == "Entrada/foto.jpg"
+    archivos = resp.json()["files"]
+    assert archivos[0]["path"] == "files/Entrada/Fotos/foto.jpg"
+    assert archivos[0]["deletable"] is True
+    assert archivos[1]["deletable"] is False
     assert visto["url"].startswith("http://jarvis-tools:8000/nas/list?")
-    assert "path=Entrada" in visto["url"]
+    assert "path=files%2FEntrada" in visto["url"]
     assert "limit=10" in visto["url"]
     assert visto["tiene_header"]
+
+
+def test_nas_status_declara_el_inbox(client, monkeypatch) -> None:
+    _install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, json={"ready": True, "root": "/mnt/data/nas", "files": 3}
+        ),
+    )
+    resp = client.get("/api/nas/status", headers={"X-API-Token": API_TOKEN})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["inbox"] == "files/Entrada"
 
 
 def test_nas_search_usa_q_y_content(client, monkeypatch) -> None:

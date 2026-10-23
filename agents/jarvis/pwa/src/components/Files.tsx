@@ -277,6 +277,8 @@ export function Files({
       try {
         await api.deleteNasFile(item.path, csrfToken);
         setConfirmarBorrado(null);
+        // Si el borrado se hizo desde el visor, ciérralo: ya no existe.
+        setVisor((actual) => (actual && actual.path === item.path ? null : actual));
         if (vista === "buscar" && resultados) {
           setResultados(await api.nasSearch(resultados.query));
         } else if (vista === "explorar") {
@@ -320,10 +322,11 @@ export function Files({
   const archivosVista =
     vista === "buscar" ? resultados?.results ?? [] : recientes;
 
-  // Borrar solo se ofrece para adjuntos propios (Entrada/). El backend lo
-  // vuelve a comprobar: la UI no es la frontera de seguridad.
+  // Borrar solo se ofrece para adjuntos propios: lo decide el backend con
+  // `deletable` (él es quien conoce la ruta real de Entrada/). La UI no
+  // adivina prefijos: así no puede volver a desincronizarse.
   const acciones = (item: NasEntry) =>
-    item.path.startsWith("Entrada/")
+    item.deletable
       ? {
           onBorrar: () => setConfirmarBorrado(item.path),
           confirmando: confirmarBorrado === item.path,
@@ -566,6 +569,37 @@ export function Files({
               >
                 Descargar
               </a>
+              <div className="nas-lightbox-actions">
+                {visor.deletable &&
+                  (confirmarBorrado === visor.path ? (
+                    <>
+                      <button
+                        type="button"
+                        className="ghost-btn nas-danger"
+                        onClick={() => void borrar(visor)}
+                      >
+                        Borrar
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() => setConfirmarBorrado(null)}
+                      >
+                        No
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="icon-btn nas-lightbox-delete"
+                      aria-label={`Borrar ${visor.name}`}
+                      title="Borrar de Entrada"
+                      onClick={() => setConfirmarBorrado(visor.path)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  ))}
+              </div>
             </figcaption>
           </figure>
         </div>

@@ -152,7 +152,7 @@ async function mockBackend(page: Page, backend: Backend = {}): Promise<void> {
     if (ruta === "/files/upload" && peticion.method() === "POST") {
       return json({
         ok: true,
-        path: "Entrada/20261022-1200-abcd-adjunto.txt",
+        path: "files/Entrada/Documentos/20261022-1200-abcd-adjunto.txt",
         name: "adjunto.txt",
         size: 8,
       });

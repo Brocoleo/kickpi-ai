@@ -212,6 +212,8 @@ export type NasEntry = {
   size?: number;
   modified?: string;
   ext?: string;
+  /** El backend confirma que vive dentro de Entrada/ y se puede borrar. */
+  deletable?: boolean;
 };
 
 export type NasListing = {

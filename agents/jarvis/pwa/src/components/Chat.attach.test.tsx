@@ -42,7 +42,7 @@ describe("Chat · adjuntos", () => {
   it("sube el archivo y menciona la ruta en el mensaje", async () => {
     const subido = {
       ok: true,
-      path: "Entrada/20261022-1200-abcd-factura.pdf",
+      path: "files/Entrada/Documentos/20261022-1200-abcd-factura.pdf",
       name: "factura.pdf",
       size: 4,
     };
@@ -79,7 +79,9 @@ describe("Chat · adjuntos", () => {
     await user.click(enviar);
 
     await waitFor(() =>
-      expect(enviado).toContain("Adjunto en la NAS: Entrada/20261022-1200-abcd-factura.pdf"),
+      expect(enviado).toContain(
+        "Adjunto en la NAS: files/Entrada/Documentos/20261022-1200-abcd-factura.pdf",
+      ),
     );
     expect(enviado).toContain("mira esto");
     // El chip se limpia al enviar.

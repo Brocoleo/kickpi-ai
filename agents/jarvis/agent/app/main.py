@@ -62,7 +62,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 
 # Extensiones que no se aceptan como adjuntos. No se ejecutan en el servidor,
 # pero la NAS no debe convertirse en un depósito de programas descargables.
@@ -78,6 +78,34 @@ _UPLOAD_BLOCKED_EXT = {
     ".reg",
     ".vbs",
 }
+
+# Clasificación automática de adjuntos dentro de Entrada/. La extensión manda;
+# el content_type solo se usa como respaldo (los navegadores lo confunden).
+_IMAGE_EXT = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".bmp",
+    ".heic",
+    ".heif",
+    ".tif",
+    ".tiff",
+}
+_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"}
+
+
+def _carpeta_adjunto(nombre: str, content_type: str | None) -> str:
+    """Devuelve la subcarpeta de Entrada/ donde va el adjunto."""
+    ext = Path(nombre).suffix.lower()
+    tipo = (content_type or "").lower()
+    if ext in _IMAGE_EXT or tipo.startswith("image/"):
+        return "Fotos"
+    if ext in _VIDEO_EXT or tipo.startswith("video/"):
+        return "Videos"
+    return "Documentos"
 
 
 @asynccontextmanager
@@ -1024,9 +1052,17 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     sello = time.strftime("%Y%m%d-%H%M%S")
     nombre = f"{sello}-{uuid.uuid4().hex[:4]}-{limpio[:120]}"
 
+    carpeta = _carpeta_adjunto(limpio, file.content_type)
+    destino_dir = inbox / carpeta
     try:
-        inbox.mkdir(parents=True, exist_ok=True)
-        destino = (inbox / nombre).resolve()
+        destino_dir.mkdir(parents=True, exist_ok=True)
+        # La subcarpeta también debe ser del usuario del host: si la crea root,
+        # FileBrowser no puede ordenar ni borrar dentro de ella.
+        try:
+            os.chown(destino_dir, settings.nas_inbox_uid, settings.nas_inbox_gid)
+        except OSError:
+            pass
+        destino = (destino_dir / nombre).resolve()
         if inbox.resolve() not in destino.parents:
             raise HTTPException(400, "Nombre de archivo no válido")
     except HTTPException:
@@ -1068,16 +1104,19 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     except OSError:
         pass
 
-    relativa = f"{inbox.name}/{nombre}"
+    # Ruta relativa a la RAÍZ del NAS (no al inbox): es la que devuelven
+    # nas_list/nas_recent y la que la PWA usa para borrar.
+    relativa = f"{settings.nas_inbox_rel.strip('/')}/{carpeta}/{nombre}"
     log.info("adjunto guardado en la NAS: %s (%d bytes)", relativa, tamano)
 
-    # Invalidar la caché del índice para la carpeta Entrada, de modo que
-    # búsquedas posteriores vean el archivo al instante (sin esperar 15 min).
+    # Invalidar la caché del índice para la carpeta Entrada (cubre las
+    # subcarpetas), de modo que búsquedas posteriores vean el archivo al
+    # instante (sin esperar 15 min).
     try:
         async with httpx.AsyncClient(timeout=settings.tools_timeout) as client:
             await client.post(
                 f"{settings.tools_url}/nas/refresh",
-                params={"subruta": "files/Entrada"},
+                params={"subruta": settings.nas_inbox_rel.strip("/")},
                 headers=_tools_headers(),
             )
     except Exception:  # noqa: BLE001 - best-effort, no romper la subida si falla
@@ -1127,12 +1166,26 @@ async def _tools_json(endpoint: str, params: dict | None = None) -> dict:
         raise HTTPException(502, "Respuesta no válida de herramientas") from exc
 
 
+def _marcar_borrables(payload: dict, clave: str) -> dict:
+    """Añade `deletable` a cada archivo que vive dentro de Entrada/.
+
+    La PWA no adivina rutas: el backend es el único que sabe dónde está la
+    carpeta de entrada y, por tanto, qué se puede borrar.
+    """
+    prefijo = get_settings().nas_inbox_rel.strip("/") + "/"
+    for item in payload.get(clave) or []:
+        if isinstance(item, dict):
+            item["deletable"] = str(item.get("path", "")).startswith(prefijo)
+    return payload
+
+
 @app.get("/api/nas/list", tags=["nas"], dependencies=[Depends(require_auth)])
 async def nas_list(
     path: str = Query(default="", max_length=500),
     limit: int = Query(default=300, ge=1, le=1000),
 ) -> dict:
-    return await _tools_json("/nas/list", {"path": path, "limit": limit})
+    datos = await _tools_json("/nas/list", {"path": path, "limit": limit})
+    return _marcar_borrables(datos, "files")
 
 
 @app.get("/api/nas/recent", tags=["nas"], dependencies=[Depends(require_auth)])
@@ -1140,7 +1193,8 @@ async def nas_recent(
     limit: int = Query(default=30, ge=1, le=50),
     path: str = Query(default="", max_length=500),
 ) -> dict:
-    return await _tools_json("/nas/recent", {"limit": limit, "path": path})
+    datos = await _tools_json("/nas/recent", {"limit": limit, "path": path})
+    return _marcar_borrables(datos, "files")
 
 
 @app.get("/api/nas/search", tags=["nas"], dependencies=[Depends(require_auth)])
@@ -1149,14 +1203,17 @@ async def nas_search(
     content: bool = Query(default=True),
     limit: int = Query(default=30, ge=1, le=50),
 ) -> dict:
-    return await _tools_json(
+    datos = await _tools_json(
         "/nas/search", {"q": q, "content": content, "limit": limit}
     )
+    return _marcar_borrables(datos, "results")
 
 
 @app.get("/api/nas/status", tags=["nas"], dependencies=[Depends(require_auth)])
 async def nas_status() -> dict:
-    return await _tools_json("/nas/status")
+    datos = await _tools_json("/nas/status")
+    datos["inbox"] = get_settings().nas_inbox_rel.strip("/")
+    return datos
 
 
 @app.get("/api/nas/file", tags=["nas"], dependencies=[Depends(require_auth)])
@@ -1229,10 +1286,11 @@ async def delete_file(path: str = Query(min_length=1, max_length=500)) -> dict:
     """
     settings = get_settings()
     inbox = Path(settings.nas_inbox_dir).resolve()
+    inbox_rel = settings.nas_inbox_rel.strip("/")
     relativa = path.strip("/")
-    if not relativa.startswith(f"{inbox.name}/"):
+    if not relativa.startswith(f"{inbox_rel}/"):
         raise HTTPException(403, "Solo se pueden borrar adjuntos de Entrada/")
-    interno = relativa[len(inbox.name) + 1 :]
+    interno = relativa[len(inbox_rel) + 1 :]
     if not interno or any(parte in ("", "..") for parte in interno.split("/")):
         raise HTTPException(400, "Ruta no válida")
 

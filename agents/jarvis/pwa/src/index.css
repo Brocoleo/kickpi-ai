@@ -3122,6 +3122,20 @@ body.modal-open .tabbar {
   border: 1px solid var(--border);
 }
 
+.nas-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: none;
+}
+
+.nas-lightbox-delete {
+  width: 44px;
+  height: 44px;
+  color: var(--danger);
+}
+
 .history-more {
   width: calc(100% - 16px);
   margin: 10px 8px 4px;

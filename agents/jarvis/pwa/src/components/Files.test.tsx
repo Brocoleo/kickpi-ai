@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Files } from "./Files";
 
@@ -38,15 +38,19 @@ describe("Files · panel NAS nativo", () => {
     apiMock.nasList.mockReset();
     apiMock.nasSearch.mockReset();
     apiMock.deleteNasFile.mockReset();
-    apiMock.deleteNasFile.mockResolvedValue({ ok: true, path: "Entrada/foto.jpg" });
+    apiMock.deleteNasFile.mockResolvedValue({
+      ok: true,
+      path: "files/Entrada/Fotos/foto.jpg",
+    });
     apiMock.nasRecent.mockResolvedValue({
       ready: true,
       files: [
         {
           name: "foto.jpg",
-          path: "Entrada/foto.jpg",
+          path: "files/Entrada/Fotos/foto.jpg",
           size: 2048,
           modified: "2026-10-20T12:00:00+00:00",
+          deletable: true,
         },
       ],
       error: null,
@@ -64,6 +68,7 @@ describe("Files · panel NAS nativo", () => {
                 path: "Documentos/carta.pdf",
                 size: 1024,
                 modified: "2026-10-19T12:00:00+00:00",
+                deletable: false,
               },
             ],
             error: null,
@@ -127,8 +132,44 @@ describe("Files · panel NAS nativo", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Borrar" }));
     expect(apiMock.deleteNasFile).toHaveBeenCalledWith(
-      "Entrada/foto.jpg",
+      "files/Entrada/Fotos/foto.jpg",
       "csrf-123",
+    );
+  });
+
+  it("no ofrece borrar archivos fuera de Entrada", async () => {
+    render(<Files csrfToken={null} onUnauthorized={() => {}} />);
+
+    await screen.findByText("foto.jpg");
+    await userEvent.click(screen.getByRole("tab", { name: "Explorar" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Documentos" }));
+    await screen.findByText("carta.pdf");
+
+    expect(
+      screen.queryByRole("button", { name: "Borrar carta.pdf" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("borra desde el visor y lo cierra", async () => {
+    render(<Files csrfToken="csrf-123" onUnauthorized={() => {}} />);
+
+    await screen.findByText("foto.jpg");
+    await userEvent.click(screen.getByRole("button", { name: /^foto\.jpg/ }));
+
+    const dialogo = await screen.findByRole("dialog", { name: "foto.jpg" });
+    await userEvent.click(
+      within(dialogo).getByRole("button", { name: "Borrar foto.jpg" }),
+    );
+    await userEvent.click(
+      within(dialogo).getByRole("button", { name: "Borrar" }),
+    );
+
+    expect(apiMock.deleteNasFile).toHaveBeenCalledWith(
+      "files/Entrada/Fotos/foto.jpg",
+      "csrf-123",
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
   });
 });
