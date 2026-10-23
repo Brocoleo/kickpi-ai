@@ -39,7 +39,7 @@ def touch_conversation(conv_id: str) -> None:
         conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (_now(), conv_id))
 
 
-def list_conversations(limit: int = 50) -> list[dict]:
+def list_conversations(limit: int = 50, offset: int = 0) -> list[dict]:
     """Conversaciones con lo justo para pintar la lista sin abrir cada una.
 
     `preview` es el último mensaje del usuario (lo que de verdad identifica
@@ -56,8 +56,8 @@ def list_conversations(limit: int = 50) -> list[dict]:
             "     WHERE m.conversation_id = c.id AND m.role = 'user' "
             "     ORDER BY m.id DESC LIMIT 1) AS preview "
             "FROM conversations c "
-            "ORDER BY c.updated_at DESC LIMIT ?",
-            (limit,),
+            "ORDER BY c.updated_at DESC LIMIT ? OFFSET ?",
+            (limit, max(0, offset)),
         ).fetchall()
     items = []
     for row in rows:

@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     # El resto del NAS no existe para él (ver docker-compose).
     nas_inbox_dir: str = "/mnt/data/nas/files/Entrada"
     upload_max_mb: int = 50
+    # Freno anti-abuso: subidas por minuto y por IP. El NAS es privado, pero
+    # una sesión robada no debe poder llenar el disco a base de POST.
+    upload_rate_per_min: int = 10
     # Los archivos se crean propiedad del usuario del host, no de root.
     nas_inbox_uid: int = 1000
     nas_inbox_gid: int = 1000

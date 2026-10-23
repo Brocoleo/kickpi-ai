@@ -249,3 +249,29 @@ def test_does_not_retry_a_post(client, monkeypatch):
     )
     assert resp.status_code == 502
     assert llamadas["n"] == 1
+
+
+def test_bloquea_administracion_de_filebrowser(client, monkeypatch) -> None:
+    """La sesión de Jarvis no debe poder crear usuarios ni cambiar ajustes."""
+    llamadas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        llamadas.append(str(request.url))
+        return httpx.Response(200, stream=httpx.ByteStream(b"no deberia"))
+
+    _install_transport(monkeypatch, handler)
+    headers = {"X-API-Token": API_TOKEN}
+
+    for metodo, ruta in [
+        ("PUT", "/files/api/users?id=1"),
+        ("POST", "/files/api/users"),
+        ("PATCH", "/files/api/settings"),
+        ("DELETE", "/files/api/access"),
+    ]:
+        resp = client.request(metodo, ruta, headers=headers, content=b"{}")
+        assert resp.status_code == 403, (metodo, ruta, resp.text)
+
+    assert llamadas == []
+    # Leer usuarios (para pintar la interfaz) sí está permitido.
+    resp = client.get("/files/api/users?id=self", headers=headers)
+    assert resp.status_code == 200

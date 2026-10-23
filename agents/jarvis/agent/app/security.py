@@ -8,6 +8,7 @@
 import hashlib
 import hmac
 import secrets
+import threading
 import time
 
 from .config import get_settings
@@ -100,6 +101,53 @@ def record_login_failure() -> None:
 
 def reset_login_failures() -> None:
     _login_failures.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Limitador de subidas (ventana deslizante por IP)
+# --------------------------------------------------------------------------- #
+_UPLOAD_WINDOW_S = 60
+_upload_hits: dict[str, list[float]] = {}
+_upload_lock = threading.Lock()
+
+
+def upload_allowed(ip: str, limit: int) -> tuple[bool, int]:
+    """¿Puede esta IP subir otro archivo ahora? Devuelve (ok, reintentar_en).
+
+    Es una ventana deslizante en memoria: suficiente con un solo proceso.
+    Si el agente se reinicia, el contador también; no es un control de
+    cuotas, es un freno para que un error o un script no llenen el disco.
+    """
+    if limit <= 0:
+        return True, 0
+    ahora = time.monotonic()
+    with _upload_lock:
+        hits = [t for t in _upload_hits.get(ip, []) if ahora - t < _UPLOAD_WINDOW_S]
+        if len(hits) >= limit:
+            reintentar = max(1, int(_UPLOAD_WINDOW_S - (ahora - hits[0])) + 1)
+            _upload_hits[ip] = hits
+            return False, reintentar
+        hits.append(ahora)
+        _upload_hits[ip] = hits
+        # Higiene: no acumular IPs que ya no aparecen.
+        if len(_upload_hits) > 512:
+            for clave in list(_upload_hits):
+                vivas = [
+                    t
+                    for t in _upload_hits[clave]
+                    if ahora - t < _UPLOAD_WINDOW_S
+                ]
+                if vivas:
+                    _upload_hits[clave] = vivas
+                else:
+                    _upload_hits.pop(clave, None)
+    return True, 0
+
+
+def reset_upload_limit() -> None:
+    """Solo para pruebas: limpia la ventana de subidas."""
+    with _upload_lock:
+        _upload_hits.clear()
 
 
 # --------------------------------------------------------------------------- #

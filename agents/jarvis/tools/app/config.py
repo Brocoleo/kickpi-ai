@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     nas_root: str = "/mnt/data/nas"
     nas_refresh_s: float = 900.0
     nas_max_files: int = 300_000
+    # Caché del índice: sobrevive a reinicios del contenedor. Si el volumen
+    # no está montado, el índice sigue funcionando (solo tarda en arrancar).
+    nas_index_cache: str = "/data/nas-index.json"
+    # Tope para servir un archivo por la API (miniaturas y descargas).
+    nas_file_max_mb: int = 25
 
 
 @lru_cache

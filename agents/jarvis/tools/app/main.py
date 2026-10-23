@@ -5,8 +5,10 @@ Todos los endpoints (salvo /health) exigen el token interno
 """
 import hmac
 import logging
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi.responses import FileResponse
 
 from . import docker_api, nas_index, system_api
 from .config import get_settings
@@ -20,11 +22,26 @@ _INDEX = nas_index.IndiceNAS(
     get_settings().nas_root,
     max_files=get_settings().nas_max_files,
     refresh_s=get_settings().nas_refresh_s,
+    cache_path=get_settings().nas_index_cache,
 )
+
+# Extensiones que se pueden mostrar dentro de la PWA. Todo lo demás se
+# descarga como binario: un HTML/SVG subido a la NAS nunca debe ejecutarse
+# en el origen de Jarvis.
+_INLINE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".pdf": "application/pdf",
+}
 
 app = FastAPI(
     title="Jarvis Tools",
-    version="0.2.0",
+    version="0.3.0",
     description="Operaciones de solo lectura sobre el sistema, Docker y la NAS.",
 )
 
@@ -62,6 +79,8 @@ def list_ops() -> dict:
             "GET /nas/search",
             "GET /nas/recent",
             "GET /nas/status",
+            "GET /nas/list",
+            "GET /nas/file",
         ],
         "denied": [
             "start/stop/restart de contenedores",
@@ -123,6 +142,59 @@ def nas_recent(
 def nas_status() -> dict:
     """Estado del índice: archivos vistos, tamaño, antigüedad y errores."""
     return _INDEX.estado()
+
+
+@app.get("/nas/list", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_list(
+    path: str = Query(default="", max_length=500, description="Carpeta relativa"),
+    limit: int = Query(default=300, ge=1, le=1000),
+) -> dict:
+    """Lista una carpeta del NAS: subcarpetas primero, luego archivos."""
+    return _INDEX.listar(path, limite=limit)
+
+
+@app.get("/nas/file", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_file(
+    path: str = Query(min_length=1, max_length=500, description="Archivo relativo"),
+    download: bool = Query(default=False),
+) -> FileResponse:
+    """Sirve un archivo de la NAS (solo lectura) para miniaturas o descarga.
+
+    Imágenes y PDF se muestran en línea; cualquier otro tipo se fuerza como
+    descarga. Un HTML con scripts servido desde este origen sería XSS.
+    """
+    settings = get_settings()
+    try:
+        destino = _INDEX.archivo(path)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ruta no válida") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Archivo no encontrado") from exc
+
+    tamano = destino.stat().st_size
+    if tamano > settings.nas_file_max_mb * 1024 * 1024:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"El archivo supera {settings.nas_file_max_mb} MB",
+        )
+
+    inline = _INLINE_TYPES.get(destino.suffix.lower())
+    if inline and not download:
+        media_type = inline
+        filename = None
+    else:
+        media_type = "application/octet-stream"
+        filename = destino.name
+
+    return FileResponse(
+        destino,
+        media_type=media_type,
+        filename=filename,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=60",
+        },
+    )
 
 
 @app.on_event("startup")

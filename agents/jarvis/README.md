@@ -63,14 +63,27 @@ el servidor. Inferencia en la nube (OpenRouter / cualquier API compatible).
 
 ## NAS desde el navegador (FileBrowser, solo lectura)
 
-El NAS se puede explorar desde cualquier dispositivo del tailnet **sin login**
-y **sin poder modificarlo**:
+El NAS se puede explorar desde la PWA (panel nativo) y, para lo avanzado,
+desde FileBrowser **sin login** y **sin poder modificarlo**:
 
-- **Dirección**: `https://kickpi-jarvis.tail1e3b4d.ts.net:8443` (directo) o
-  `https://kickpi-jarvis.tail1e3b4d.ts.net/files/` (misma sesión que Jarvis).
-- **Sin login propio**: `auth.methods.noauth: true`. FileBrowser no es
-  alcanzable desde fuera del tailnet, así que la frontera de seguridad es
-  Tailscale, no un formulario.
+- **Dentro de la PWA**: pestaña Archivos → buscar por nombre/contenido,
+  recientes, navegación por carpetas y miniaturas. Usa `/api/nas/*` del
+  agente, que añade el token de herramientas: el navegador nunca lo ve.
+- **FileBrowser**: `https://kickpi-jarvis.tail1e3b4d.ts.net/files/` (misma
+  sesión que Jarvis). La pestaña Archivos lo ofrece como vista «avanzada».
+- **Sin login propio**: `auth.methods.noauth: true`. FileBrowser no debe
+  quedar expuesto fuera de Jarvis: usa el usuario 1 (admin) en modo noauth.
+  Por eso el proxy bloquea `POST/PUT/PATCH/DELETE` sobre
+  `/files/api/users`, `/files/api/settings` y `/files/api/access`.
+- **Cerrar el acceso directo** (recomendado, una vez):
+
+  ```bash
+  ssh -t leandro@100.111.200.54 \
+    'sudo bash /home/leandro/jarvis/deploy/remote/cerrar-filebrowser.sh'
+  ```
+
+  Apaga `tailscale serve :8443`; FileBrowser sigue en `127.0.0.1:8080` para
+  el proxy. Es reversible (el script imprime el comando de vuelta).
 - **Solo lectura, tres candados**:
   1. `sources[0].config.readOnly: true` en la config (deshabilita la UI, WebDAV
      y la API de escritura);
@@ -78,8 +91,10 @@ y **sin poder modificarlo**:
      la config, el kernel no deja escribir);
   3. los permisos por defecto no incluyen `create`/`modify`/`delete`/`share`.
 - **Subir archivos** es cosa del agente: el clip del chat
-  (`POST /api/files/upload`, 50 MB) deja todo en `Entrada/`. FileBrowser no
-  tiene botón de subida.
+  (`POST /api/files/upload`, 50 MB, 10 subidas/min por IP) deja todo en
+  `Entrada/`. FileBrowser no tiene botón de subida. Los adjuntos propios se
+  pueden borrar desde la PWA (`DELETE /api/files?path=…`), siempre con
+  confirmación, sesión y CSRF, y **solo** dentro de `Entrada/`.
 - **Marca y tema**: `deploy/filebrowser/{config.yaml,jarvis.css}` (nombre
   «Jarvis · NAS», fondo `#07090d`, acento turquesa). Se sincronizan en cada
   `./deploy-all.sh` junto al resto del código.
@@ -188,6 +203,17 @@ Desarrollo de la interfaz con recarga en caliente:
 cd pwa && npm run dev
 # Vite hace proxy de /api, /health y /files a http://localhost:8888
 ```
+
+### Aviso de versiones nuevas
+
+```bash
+./scripts/check-updates.sh
+```
+
+Compara la versión de FileBrowser fijada en `docker-compose.yml` con la última
+publicada en GitHub y lista todas las imágenes del stack. **No instala nada**:
+un `pull` automático puede cruzar de FileBrowser v1 a v2 (cambia la base de
+datos) en mitad de la noche. La actualización se decide y se despliega a mano.
 
 ## Commits
 
@@ -368,6 +394,17 @@ arrancar.
 Para que sea diaria, un LaunchAgent en el Mac o un `cron` de la placa llaman
 al mismo script; no se instala nada sin pedirlo.
 
+Simulacro mensual (verifica la última copia el día 1 a las 09:05):
+
+```bash
+./scripts/instalar-drill-mensual.sh          # instala/actualiza el cron
+./scripts/instalar-drill-mensual.sh --quitar # lo quita
+```
+
+El cron es del usuario (no necesita sudo) y escribe en
+`~/respaldos/jarvis/drill.log`. Si el simulacro falla, la copia no se replica
+y el log dice qué base o archivo no cuadra.
+
 ## Autenticación
 
 Dos vías deliberadamente separadas:
@@ -481,8 +518,11 @@ escritura; el resto del NAS no existe para él. Al adjuntar desde el clip:
 `jarvis-tools` monta `/mnt/data/nas` en **solo lectura** y mantiene un índice
 en memoria (nombre, ruta, tamaño, fecha). Se construye en segundo plano al
 arrancar y se refresca cada 15 minutos; una búsqueda nunca espera un
-reescaneo completo. El contenido de archivos de texto (`.md`, `.txt`, `.log`,
-`.csv`, `.json`…) se busca bajo demanda con presupuesto de tiempo.
+reescaneo completo. El índice se guarda en `/data/nas-index.json` (volumen
+`/mnt/data/docker/tools_data`) y **se recarga al reiniciar**: el contenedor
+sirve resultados al instante y refresca en segundo plano. El contenido de
+archivos de texto (`.md`, `.txt`, `.log`, `.csv`, `.json`…) se busca bajo
+demanda con presupuesto de tiempo.
 
 - Insensible a mayúsculas y acentos: «reunión» encuentra `reunion.md`.
 - Tope de 300 000 archivos (`JARVIS_NAS_MAX_FILES`) para no agotar la RAM;
@@ -531,13 +571,18 @@ o **token de API**.
 | POST | `/api/chat/stream` | Igual, pero responde **SSE** (`meta`, `segment`, `token`, `tool_start`, `tool`, `done`, `error`) |
 | | | Ambas aceptan `"model"` (opcional): fuerza un modelo de la cadena, sin fallback (400 si no pertenece). Es para el banco |
 | POST | `/api/chat/stop` | `{"conversation_id": "..."}` detiene el turno en curso; el parcial se guarda marcado `interrupted` |
-| POST | `/api/files/upload` | Multipart `file`: lo guarda en `Entrada/` del NAS (sesión + CSRF, 50 MB) |
-| GET | `/api/conversations` | Lista de conversaciones (título, vista previa, nº de mensajes) |
+| POST | `/api/files/upload` | Multipart `file`: lo guarda en `Entrada/` del NAS (sesión + CSRF, 50 MB, 10/min por IP) |
+| GET | `/api/conversations` | Lista paginada (`?limit=50&offset=0`, incluye `has_more`) |
 | GET | `/api/conversations/{id}` | Mensajes de una conversación (con id, fecha y metadatos de herramientas) |
 | DELETE | `/api/conversations/{id}` | Borra la conversación y sus mensajes (sesión + CSRF) |
+| GET | `/api/nas/list` | Lista una carpeta del NAS (`?path=`) |
+| GET | `/api/nas/recent` | Últimos archivos (`?limit=30&path=`) |
+| GET | `/api/nas/search` | Busca (`?q=&content=&limit=`); el agente añade el token de tools |
+| GET | `/api/nas/file` | Miniatura/descarga de un archivo (`?path=&download=`), solo lectura |
+| GET | `/api/nas/status` | Estado del índice (archivos, antigüedad, caché) |
 | GET | `/api/tools` | Herramientas permitidas |
 | POST | `/api/tools/{name}` | Invoca una herramienta (widgets) |
-| GET | `/api/llm/status` | Cadena de modelos y circuit breaker |
+| GET | `/api/llm/status` | Cadena de modelos, circuit breaker y latencias (`metrics`) |
 | GET | `/api/audit` | Auditoría de llamadas a herramientas |
 | GET | `/api/equipos` | Equipos registrados con su estado |
 | GET | `/api/executions` | Actividad del ejecutor (sin sondear hosts) |

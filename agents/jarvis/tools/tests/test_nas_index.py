@@ -120,3 +120,56 @@ def test_raiz_inexistente_no_rompe(tmp_path) -> None:
     salida = indice.buscar("x")
     assert salida["results"] == []
     assert salida["ready"] is False
+
+
+def test_lista_una_carpeta_sin_indice_completo(tmp_path) -> None:
+    indice = _indice(_arbol(tmp_path))
+    raiz = indice.listar("")
+    assert raiz["ready"] is True
+    assert [d["name"] for d in raiz["dirs"]] == ["Contratos", "fotos", "notas", "viejos"]
+    assert raiz["files"] == []
+
+    notas = indice.listar("notas")
+    assert notas["files"][0]["path"] == "notas/reunion.md"
+    assert notas["parent"] == ""
+
+
+def test_lista_rechaza_escape_de_ruta(tmp_path) -> None:
+    indice = _indice(_arbol(tmp_path))
+    salida = indice.listar("../../etc")
+    assert salida["ready"] is False
+    assert salida["error"] == "ruta no válida"
+
+
+def test_archivo_valida_ruta_y_symlinks(tmp_path) -> None:
+    raiz = _arbol(tmp_path)
+    indice = _indice(raiz)
+    assert indice.archivo("notas/reunion.md").name == "reunion.md"
+
+    fuera = tmp_path / "secreto.txt"
+    fuera.write_text("no debe salir", encoding="utf-8")
+    (raiz / "enlace.txt").symlink_to(fuera)
+    try:
+        indice.archivo("enlace.txt")
+    except ValueError as exc:
+        assert "fuera" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("el symlink debía rechazarse")
+
+
+def test_cache_sobrevive_a_otra_instancia(tmp_path) -> None:
+    raiz = _arbol(tmp_path)
+    cache = tmp_path / "cache" / "nas.json"
+    primero = _indice(raiz, cache_path=cache)
+    total = primero.estado()["files"]
+    assert cache.is_file()
+
+    # Se borra el árbol: si se releyera del disco habría 0 archivos.
+    for ruta in sorted(raiz.rglob("*"), reverse=True):
+        if ruta.is_file():
+            ruta.unlink()
+    segundo = _indice(raiz, cache_path=cache)
+    estado = segundo.estado()
+    assert estado["cache_loaded"] is True
+    assert estado["files"] == total
+    assert segundo.buscar("orange", contenido=False)["results"]

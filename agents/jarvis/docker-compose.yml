@@ -38,7 +38,7 @@ services:
 
   jarvis-tools:
     build: ./tools
-    image: jarvis-tools:0.2
+    image: jarvis-tools:0.3
     container_name: jarvis-tools
     restart: unless-stopped
     depends_on:
@@ -52,9 +52,14 @@ services:
       # Índice de búsqueda del chat. Solo lectura: este servicio no escribe.
       JARVIS_NAS_ROOT: /mnt/data/nas
       JARVIS_NAS_MAX_FILES: ${JARVIS_NAS_MAX_FILES:-300000}
+      JARVIS_NAS_INDEX_CACHE: /data/nas-index.json
+      JARVIS_NAS_FILE_MAX_MB: ${JARVIS_NAS_FILE_MAX_MB:-25}
     volumes:
       - /proc/device-tree/model:/etc/board-model:ro
       - /mnt/data/nas:/mnt/data/nas:ro
+      # Caché del índice (solo este servicio escribe aquí): reiniciar el
+      # contenedor ya no obliga a recorrer la NAS entera.
+      - /mnt/data/docker/tools_data:/data
     expose:
       - "8000"
     networks:
@@ -115,7 +120,7 @@ services:
 
   jarvis-agent:
     build: ./agent
-    image: jarvis-agent:0.12.0
+    image: jarvis-agent:0.15.0
     container_name: jarvis-agent
     restart: unless-stopped
     depends_on:

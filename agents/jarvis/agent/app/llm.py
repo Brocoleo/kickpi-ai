@@ -20,6 +20,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import threading
 import time
 
 import httpx
@@ -137,6 +138,64 @@ class CircuitBreaker:
 
 CIRCUIT = CircuitBreaker()
 
+
+class LlmMetrics:
+    """Últimas latencias observadas por modelo (en memoria).
+
+    No es un sistema de métricas: es lo mínimo para responder «¿el primer
+    token tarda 2 s o 40 s?» desde `/health` sin instalar Prometheus.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._data: dict[str, dict] = {}
+
+    def record(
+        self,
+        model: str,
+        *,
+        ttfb_ms: float | None = None,
+        total_ms: float | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._lock:
+            item = self._data.setdefault(model, {})
+            if ttfb_ms is not None:
+                item["last_ttfb_ms"] = round(ttfb_ms, 1)
+                minimo = item.get("min_ttfb_ms")
+                item["min_ttfb_ms"] = (
+                    round(ttfb_ms, 1)
+                    if minimo is None
+                    else round(min(minimo, ttfb_ms), 1)
+                )
+            if total_ms is not None:
+                item["last_total_ms"] = round(total_ms, 1)
+            if error:
+                item["last_error"] = error[:200]
+            else:
+                item.pop("last_error", None)
+            item["turns"] = int(item.get("turns", 0)) + 1
+            item["last_used_at"] = time.time()
+
+    def snapshot(self) -> dict:
+        now = time.time()
+        with self._lock:
+            return {
+                modelo: {
+                    **valores,
+                    "last_used_ago_s": (
+                        round(now - valores["last_used_at"], 1)
+                        if "last_used_at" in valores
+                        else None
+                    ),
+                    "last_used_at": None,
+                }
+                for modelo, valores in self._data.items()
+            }
+
+
+LLM_METRICS = LlmMetrics()
+
 # Canal de eventos para el chat en streaming (SSE).
 #
 # El endpoint instala una funcion en este ContextVar y los nodos del grafo la
@@ -247,6 +306,7 @@ async def chat_completion(
             succeeded = False
             for attempt in range(attempts):
                 per_attempt = min(settings.llm_timeout, max(1.0, remaining))
+                intento_inicio = time.monotonic()
                 try:
                     message = await _post(client, model, messages, tools, per_attempt)
                 except LLMError as exc:
@@ -265,6 +325,7 @@ async def chat_completion(
                         continue
 
                     CIRCUIT.record_failure(model, str(exc))
+                    LLM_METRICS.record(model, error=str(exc))
                     errors.append(f"{model}: {exc}")
                     log.warning("modelo %s descartado (%s): %s", model, exc.kind, exc)
                     break
@@ -273,6 +334,9 @@ async def chat_completion(
 
             if succeeded:
                 CIRCUIT.record_success(model)
+                LLM_METRICS.record(
+                    model, total_ms=(time.monotonic() - intento_inicio) * 1000
+                )
                 if errors:
                     log.info("respondió %s tras fallback (%d errores previos)", model, len(errors))
                 return message, model
@@ -433,14 +497,34 @@ async def chat_completion_stream(
             attempts = 1 + max(0, settings.llm_max_retries_server)
             for attempt in range(attempts):
                 per_attempt = min(settings.llm_timeout, max(1.0, remaining))
+                intento_inicio = time.monotonic()
+                primer_token: dict[str, float | None] = {"t": None}
+
+                def emitir(texto: str) -> None:
+                    # Se mide el primer token real, no el inicio del stream:
+                    # un proveedor puede abrir la conexión y tardar 20 s.
+                    if primer_token["t"] is None:
+                        primer_token["t"] = time.monotonic()
+                    on_token(texto)
+
                 try:
                     message, _ = await _stream_post(
-                        client, model, messages, tools, per_attempt, on_token
+                        client, model, messages, tools, per_attempt, emitir
                     )
                 except LLMError as exc:
                     if exc.emitted:
                         # Ya hay texto en pantalla: no se reintenta.
                         CIRCUIT.record_failure(model, str(exc))
+                        LLM_METRICS.record(
+                            model,
+                            ttfb_ms=(
+                                (primer_token["t"] - intento_inicio) * 1000
+                                if primer_token["t"] is not None
+                                else None
+                            ),
+                            total_ms=(time.monotonic() - intento_inicio) * 1000,
+                            error=str(exc),
+                        )
                         raise
                     if exc.kind == AUTH:
                         raise
@@ -453,6 +537,7 @@ async def chat_completion_stream(
                         await asyncio.sleep(delay)
                         continue
                     CIRCUIT.record_failure(model, str(exc))
+                    LLM_METRICS.record(model, error=str(exc))
                     errors.append(f"{model}: {exc}")
                     log.warning(
                         "modelo %s descartado en stream (%s): %s",
@@ -461,6 +546,15 @@ async def chat_completion_stream(
                     break
 
                 CIRCUIT.record_success(model)
+                LLM_METRICS.record(
+                    model,
+                    ttfb_ms=(
+                        (primer_token["t"] - intento_inicio) * 1000
+                        if primer_token["t"] is not None
+                        else None
+                    ),
+                    total_ms=(time.monotonic() - intento_inicio) * 1000,
+                )
                 if errors:
                     log.info(
                         "respondio %s en stream tras fallback (%d errores)",

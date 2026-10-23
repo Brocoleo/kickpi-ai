@@ -44,9 +44,9 @@ from .auth import (
 )
 from .config import SYSTEM_PROMPT, get_settings
 from .csrf import check_origin, issue_token
-from .db import init_db
+from .db import init_db, session as db_session
 from .graph import AGENT
-from .llm import CIRCUIT, MODEL_OVERRIDE, STREAM_EMIT
+from .llm import CIRCUIT, LLM_METRICS, MODEL_OVERRIDE, STREAM_EMIT
 from .security import (
     check_admin_password,
     login_allowed,
@@ -54,6 +54,7 @@ from .security import (
     record_login_failure,
     reset_login_failures,
     session_fingerprint,
+    upload_allowed,
 )
 from .executor_client import ExecutorError, call_executor
 from .tools_client import TOOL_SPECS, ToolsError, call_tool
@@ -61,12 +62,34 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.12.0"
+VERSION = "0.15.0"
+
+# Extensiones que no se aceptan como adjuntos. No se ejecutan en el servidor,
+# pero la NAS no debe convertirse en un depósito de programas descargables.
+_UPLOAD_BLOCKED_EXT = {
+    ".exe",
+    ".msi",
+    ".bat",
+    ".cmd",
+    ".com",
+    ".scr",
+    ".dll",
+    ".lnk",
+    ".reg",
+    ".vbs",
+}
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await asyncio.to_thread(init_db)
+    try:
+        # Higiene al arrancar: no dejar sesiones caducadas acumuladas.
+        purgadas = await asyncio.to_thread(sessions.purge_expired)
+        if purgadas:
+            log.info("sesiones caducadas eliminadas: %d", purgadas)
+    except Exception as exc:  # noqa: BLE001 - nunca impedir el arranque
+        log.warning("no se pudieron purgar sesiones: %s", exc)
     settings = get_settings()
     if not settings.api_token:
         log.warning("JARVIS_API_TOKEN vacío: los endpoints protegidos darán 503")
@@ -92,6 +115,11 @@ async def headers_middleware(request: Request, call_next):
         # así que SAMEORIGIN no relaja nada; DENY rompería el iframe (y el
         # usuario solo vería un recuadro vacío, sin error visible).
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # Solo se limita quién puede enmarcarlo: no se tocan scripts/estilos
+        # de FileBrowser (Vue usa inline y se rompería la interfaz).
+        response.headers.setdefault(
+            "Content-Security-Policy", "frame-ancestors 'self'"
+        )
     else:
         response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -111,7 +139,12 @@ async def headers_middleware(request: Request, call_next):
             "base-uri 'self'; form-action 'self'",
         )
     if request.url.path.startswith("/api/") or request.url.path == "/health":
-        response.headers["Cache-Control"] = "no-store"
+        # Las miniaturas del NAS sí pueden cachearse en el navegador: son
+        # privadas y de solo lectura. El resto de la API, nunca.
+        if request.url.path == "/api/nas/file":
+            response.headers["Cache-Control"] = "private, max-age=60"
+        else:
+            response.headers["Cache-Control"] = "no-store"
     else:
         # El "shell" de la PWA (HTML, service worker, manifest) NUNCA se
         # cachea: si se cachea, el iPhone sigue abriendo un build viejo.
@@ -176,13 +209,47 @@ def _static_asset() -> str | None:
 @app.get("/health", tags=["meta"])
 async def health() -> dict:
     settings = get_settings()
-    tools_ok = False
-    try:
-        async with httpx.AsyncClient(timeout=3) as client:
-            r = await client.get(f"{settings.tools_url}/health")
-            tools_ok = r.status_code == 200
-    except httpx.HTTPError:
-        tools_ok = False
+
+    def _db_ms() -> float:
+        import time as _time
+
+        inicio = _time.perf_counter()
+        with db_session() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return round((_time.perf_counter() - inicio) * 1000, 2)
+
+    async def _tools() -> tuple[bool, float, dict | None]:
+        import time as _time
+
+        inicio = _time.perf_counter()
+        headers = {"X-Tools-Token": settings.tools_token}
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                salud, estado = await asyncio.gather(
+                    client.get(f"{settings.tools_url}/health"),
+                    client.get(f"{settings.tools_url}/nas/status", headers=headers),
+                    return_exceptions=True,
+                )
+        except httpx.HTTPError:
+            return False, round((_time.perf_counter() - inicio) * 1000, 2), None
+        ms = round((_time.perf_counter() - inicio) * 1000, 2)
+        ok = not isinstance(salud, Exception) and salud.status_code == 200
+        indice = None
+        if not isinstance(estado, Exception) and estado.status_code == 200:
+            datos = estado.json()
+            indice = {
+                "ready": datos.get("ready"),
+                "files": datos.get("files"),
+                "building": datos.get("building"),
+                "truncated": datos.get("truncated"),
+                "cache_loaded": datos.get("cache_loaded"),
+                "stale": datos.get("stale"),
+            }
+        return ok, ms, indice
+
+    db_ms, (tools_ok, tools_ms, indice) = await asyncio.gather(
+        asyncio.to_thread(_db_ms), _tools()
+    )
 
     return {
         "status": "ok",
@@ -191,6 +258,9 @@ async def health() -> dict:
         "llm_configured": settings.llm_configured,
         "llm_model": settings.llm_model,
         "tools_reachable": tools_ok,
+        "db_ms": db_ms,
+        "tools_ms": tools_ms,
+        "nas_index": indice,
         "api_token_configured": bool(settings.api_token),
         "pwa": bool(Path(settings.static_dir).is_dir()),
         "static_asset": _static_asset(),
@@ -355,6 +425,7 @@ async def llm_status() -> dict:
         "base_url": settings.llm_base_url,
         "models": settings.llm_model_chain,
         "circuit_breaker": CIRCUIT.snapshot(),
+        "metrics": LLM_METRICS.snapshot(),
         "policy": {
             "429": "sin reintento -> siguiente modelo",
             "5xx": f"reintento breve (max {settings.llm_max_retries_server}) -> siguiente modelo",
@@ -912,7 +983,7 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
     tags=["files"],
     dependencies=[Depends(require_human_mutation)],
 )
-async def upload_file(file: UploadFile = File(...)) -> dict:
+async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     """Recibe un adjunto del chat y lo deja en la carpeta Entrada del NAS.
 
     Escribe SOLO dentro de `nas_inbox_dir` (la única carpeta montada con
@@ -920,16 +991,35 @@ async def upload_file(file: UploadFile = File(...)) -> dict:
     rápido sin darle al agente acceso de escritura al resto del NAS.
 
     Requiere sesión humana + CSRF: un token de API no puede subir archivos.
+    Además hay un límite por IP y se rechazan binarios ejecutables de
+    Windows/Linux: la NAS es de datos, no un depósito de programas.
     """
     settings = get_settings()
     limite = settings.upload_max_mb * 1024 * 1024
     inbox = Path(settings.nas_inbox_dir)
+
+    # El freno por IP va antes de tocar el disco. Detrás de Tailscale Serve
+    # el socket es local, así que se prefiere X-Forwarded-For.
+    xff = request.headers.get("x-forwarded-for", "")
+    ip = xff.split(",")[0].strip() if xff else (
+        request.client.host if request.client else "desconocida"
+    )
+    permitido, reintentar = upload_allowed(ip, settings.upload_rate_per_min)
+    if not permitido:
+        raise HTTPException(
+            429,
+            "Demasiadas subidas seguidas. Espera un momento.",
+            headers={"Retry-After": str(reintentar)},
+        )
 
     nombre_original = Path(file.filename or "adjunto").name
     # Fuera separadores y caracteres de control; se conservan acentos.
     limpio = re.sub(r"[^\w.\- ]+", "_", nombre_original, flags=re.UNICODE).strip(" .")
     if not limpio:
         limpio = "adjunto"
+    if Path(limpio).suffix.lower() in _UPLOAD_BLOCKED_EXT:
+        await file.close()
+        raise HTTPException(415, "Ese tipo de archivo no se admite en la NAS")
     # Prefijo único: dos archivos con el mismo nombre no se pisan.
     sello = time.strftime("%Y%m%d-%H%M%S")
     nombre = f"{sello}-{uuid.uuid4().hex[:4]}-{limpio[:120]}"
@@ -951,6 +1041,12 @@ async def upload_file(file: UploadFile = File(...)) -> dict:
                 trozo = await file.read(1024 * 1024)
                 if not trozo:
                     break
+                if tamano == 0 and (
+                    trozo[:2] == b"MZ" or trozo[:4] == b"\x7fELF"
+                ):
+                    raise HTTPException(
+                        415, "El archivo es un ejecutable, no un documento"
+                    )
                 tamano += len(trozo)
                 if tamano > limite:
                     raise HTTPException(
@@ -980,6 +1076,166 @@ async def upload_file(file: UploadFile = File(...)) -> dict:
         "name": limpio,
         "size": tamano,
     }
+
+
+# --------------------------------------------------------------------------- #
+# NAS para la PWA (solo lectura)
+#
+# El navegador nunca ve el token del servicio de herramientas: el agente
+# actúa de intermediario autenticado. Así la PWA puede explorar carpetas y
+# pedir miniaturas sin abrir un segundo puerto ni compartir secretos.
+# --------------------------------------------------------------------------- #
+def _tools_headers() -> dict[str, str]:
+    return {"X-Tools-Token": get_settings().tools_token}
+
+
+async def _tools_json(endpoint: str, params: dict | None = None) -> dict:
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=settings.tools_timeout) as client:
+            resp = await client.get(
+                f"{settings.tools_url}{endpoint}",
+                params=params or {},
+                headers=_tools_headers(),
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"El servicio de herramientas no responde: {exc}") from exc
+    if resp.status_code == 404:
+        raise HTTPException(404, "No encontrado")
+    if resp.status_code == 400:
+        raise HTTPException(400, "Ruta no válida")
+    if resp.status_code == 413:
+        raise HTTPException(413, "El archivo es demasiado grande")
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Herramientas devolvió HTTP {resp.status_code}")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise HTTPException(502, "Respuesta no válida de herramientas") from exc
+
+
+@app.get("/api/nas/list", tags=["nas"], dependencies=[Depends(require_auth)])
+async def nas_list(
+    path: str = Query(default="", max_length=500),
+    limit: int = Query(default=300, ge=1, le=1000),
+) -> dict:
+    return await _tools_json("/nas/list", {"path": path, "limit": limit})
+
+
+@app.get("/api/nas/recent", tags=["nas"], dependencies=[Depends(require_auth)])
+async def nas_recent(
+    limit: int = Query(default=30, ge=1, le=50),
+    path: str = Query(default="", max_length=500),
+) -> dict:
+    return await _tools_json("/nas/recent", {"limit": limit, "path": path})
+
+
+@app.get("/api/nas/search", tags=["nas"], dependencies=[Depends(require_auth)])
+async def nas_search(
+    q: str = Query(min_length=1, max_length=200),
+    content: bool = Query(default=True),
+    limit: int = Query(default=30, ge=1, le=50),
+) -> dict:
+    return await _tools_json(
+        "/nas/search", {"q": q, "content": content, "limit": limit}
+    )
+
+
+@app.get("/api/nas/status", tags=["nas"], dependencies=[Depends(require_auth)])
+async def nas_status() -> dict:
+    return await _tools_json("/nas/status")
+
+
+@app.get("/api/nas/file", tags=["nas"], dependencies=[Depends(require_auth)])
+async def nas_file(
+    path: str = Query(min_length=1, max_length=500),
+    download: bool = Query(default=False),
+) -> Response:
+    """Reenvía un archivo del NAS (miniatura o descarga) sin exponer secretos."""
+    settings = get_settings()
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0)
+    )
+    solicitud = client.build_request(
+        "GET",
+        f"{settings.tools_url}/nas/file",
+        params={"path": path, "download": str(download).lower()},
+        headers=_tools_headers(),
+    )
+    try:
+        upstream = await client.send(solicitud, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(502, f"No se pudo leer el archivo: {exc}") from exc
+    if upstream.status_code >= 400:
+        codigo = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        detalle = {
+            400: "Ruta no válida",
+            404: "Archivo no encontrado",
+            413: "El archivo es demasiado grande",
+        }.get(codigo, "No se pudo leer el archivo")
+        raise HTTPException(codigo if codigo in (400, 404, 413) else 502, detalle)
+
+    permitidas = {
+        "content-type",
+        "content-length",
+        "content-disposition",
+        "cache-control",
+        "x-content-type-options",
+    }
+    headers = {
+        k: v for k, v in upstream.headers.items() if k.lower() in permitidas
+    }
+    headers["Cache-Control"] = "private, max-age=60"
+
+    async def limpiar() -> None:
+        await upstream.aclose()
+        await client.aclose()
+
+    return StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        headers=headers,
+        background=BackgroundTask(limpiar),
+    )
+
+
+@app.delete(
+    "/api/files",
+    tags=["files"],
+    dependencies=[Depends(require_human_mutation)],
+)
+async def delete_file(path: str = Query(min_length=1, max_length=500)) -> dict:
+    """Borra un archivo **solo dentro de Entrada/**, con confirmación humana.
+
+    Es la única escritura destructiva de la PWA y está acotada a propósito:
+    el resto del NAS sigue siendo inmutable. Exige sesión humana + CSRF; el
+    token de API no puede borrar nada.
+    """
+    settings = get_settings()
+    inbox = Path(settings.nas_inbox_dir).resolve()
+    relativa = path.strip("/")
+    if not relativa.startswith(f"{inbox.name}/"):
+        raise HTTPException(403, "Solo se pueden borrar adjuntos de Entrada/")
+    interno = relativa[len(inbox.name) + 1 :]
+    if not interno or any(parte in ("", "..") for parte in interno.split("/")):
+        raise HTTPException(400, "Ruta no válida")
+
+    destino = (inbox / interno).resolve()
+    if inbox not in destino.parents:
+        raise HTTPException(403, "Ruta fuera de Entrada/")
+    if destino.is_symlink() or not destino.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+
+    try:
+        destino.unlink()
+    except OSError as exc:
+        raise HTTPException(500, f"No se pudo borrar: {exc}") from exc
+
+    log.info("adjunto borrado de la NAS: %s", relativa)
+    return {"ok": True, "path": relativa}
 
 
 @app.post(
@@ -1108,10 +1364,20 @@ async def _resume_after_decision(approval_id: str, payload: dict) -> None:
 @app.get(
     "/api/conversations", tags=["chat"], dependencies=[Depends(require_auth)]
 )
-async def list_conversations(limit: int = 50) -> dict:
+async def list_conversations(limit: int = 50, offset: int = 0) -> dict:
     limit = max(1, min(limit, 200))
-    items = await asyncio.to_thread(memory.list_conversations, limit)
-    return {"conversations": items, "count": len(items)}
+    offset = max(0, offset)
+    # Se pide uno de más para saber si hay otra página sin un COUNT extra.
+    items = await asyncio.to_thread(
+        memory.list_conversations, limit + 1, offset
+    )
+    has_more = len(items) > limit
+    items = items[:limit]
+    return {
+        "conversations": items,
+        "count": len(items),
+        "has_more": has_more,
+    }
 
 
 @app.get(
@@ -1251,6 +1517,16 @@ async def _files_proxy(request: Request, rest: str = "") -> Response:
         ruta = "/files" + (f"/{rest}" if rest else "")
 
     sufijo = ruta[len("/files") :] if ruta.startswith("/files") else ""
+    # Aunque FileBrowser use el usuario 1 (admin) en modo noauth, desde la
+    # PWA no se administra: usuarios, ajustes y reglas de acceso quedan
+    # cerrados. Así una sesión de Jarvis robada no puede crear un admin ni
+    # cambiar la configuración de FileBrowser.
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and sufijo.startswith(
+        ("/api/users", "/api/settings", "/api/access")
+    ):
+        raise HTTPException(
+            403, "La administración de FileBrowser no está disponible desde Jarvis"
+        )
     url = f"{base}/files{sufijo}"
     if request.url.query:
         url = f"{url}?{request.url.query}"

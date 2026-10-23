@@ -17,6 +17,7 @@ Decisiones:
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -24,6 +25,9 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Versión del formato en disco. Si cambia, el caché viejo se ignora.
+_CACHE_VERSION = 1
 
 # Ruido conocido en NAS domésticas y repos.
 _SKIP_DIRS = {
@@ -91,16 +95,83 @@ class IndiceNAS:
         *,
         max_files: int = 300_000,
         refresh_s: float = 900.0,
+        cache_path: str | Path | None = None,
     ) -> None:
         self.raiz = Path(raiz)
         self.max_files = max_files
         self.refresh_s = refresh_s
+        self.cache_path = Path(cache_path) if cache_path else None
         self._lock = threading.Lock()
         self._entradas: list[Entrada] = []
         self._construido_en = 0.0
         self._construyendo = False
         self._truncado = False
         self._error: str | None = None
+        self._cache_visto = False
+        self._cache_leido = False
+
+    # ------------------------------------------------------------------ #
+    # Caché en disco
+    # ------------------------------------------------------------------ #
+    def _leer_cache(self) -> None:
+        """Carga el índice guardado, si existe y corresponde a esta raíz.
+
+        Se lee una sola vez. Si el archivo está corrupto o es de otro
+        formato, se ignora sin ruido: el siguiente recorrido lo reescribe.
+        """
+        self._cache_visto = True
+        if not self.cache_path:
+            return
+        try:
+            datos = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            if datos.get("version") != _CACHE_VERSION:
+                return
+            if Path(datos.get("root", "")) != self.raiz:
+                return
+            entradas = [
+                Entrada(
+                    ruta=str(item[0]),
+                    nombre=str(item[1]),
+                    tamano=int(item[2]),
+                    mtime=float(item[3]),
+                )
+                for item in datos.get("files", [])
+            ]
+        except (OSError, ValueError, TypeError, IndexError):
+            return
+
+        with self._lock:
+            self._entradas = entradas
+            self._construido_en = float(datos.get("built_at") or 0.0)
+            self._truncado = bool(datos.get("truncated"))
+            self._error = None
+            self._cache_leido = True
+
+    def _guardar_cache(self) -> None:
+        if not self.cache_path:
+            return
+        with self._lock:
+            entradas = self._entradas
+            construido = self._construido_en
+            truncado = self._truncado
+        payload = {
+            "version": _CACHE_VERSION,
+            "root": str(self.raiz),
+            "built_at": construido,
+            "truncated": truncado,
+            "files": [[e.ruta, e.nombre, e.tamano, e.mtime] for e in entradas],
+        }
+        temporal = self.cache_path.with_suffix(self.cache_path.suffix + ".tmp")
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporal.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(temporal, self.cache_path)
+        except OSError:
+            # Un caché que no se puede escribir no debe romper las búsquedas.
+            temporal.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ #
     # Construcción
@@ -159,6 +230,8 @@ class IndiceNAS:
             self._error = error
             self._construido_en = time.time()
             self._construyendo = False
+        if entradas and error is None:
+            self._guardar_cache()
 
     def asegurar(self, espera_s: float = 5.0) -> bool:
         """Garantiza un índice (aunque sea viejo) y lanza refresco si toca.
@@ -167,6 +240,8 @@ class IndiceNAS:
         `espera_s`: si el primer recorrido tarda (disco grande), la consulta
         responde «indexando» en vez de colgar el turno del modelo.
         """
+        if not self._cache_visto:
+            self._leer_cache()
         with self._lock:
             fresco = bool(self._entradas) and (
                 time.time() - self._construido_en
@@ -319,6 +394,125 @@ class IndiceNAS:
             "error": error,
         }
 
+    @staticmethod
+    def _normalizar_ruta(ruta: str) -> str:
+        """Ruta relativa limpia; rechaza cualquier intento de escape."""
+        limpia = (ruta or "").strip().strip("/")
+        if not limpia:
+            return ""
+        partes = [p for p in limpia.split("/") if p and p != "."]
+        if any(p == ".." for p in partes):
+            raise ValueError("ruta no válida")
+        return "/".join(partes)
+
+    def _dentro_de_raiz(self, destino: Path) -> bool:
+        raiz = self.raiz.resolve()
+        resuelto = destino.resolve()
+        return resuelto == raiz or raiz in resuelto.parents
+
+    def listar(self, ruta: str = "", *, limite: int = 300) -> dict:
+        """Lista UNA carpeta del NAS (carpetas primero, luego archivos).
+
+        Se lee del sistema de archivos y no del índice: así aparecen también
+        carpetas vacías y archivos recién copiados. Es una sola llamada a
+        `scandir`, no un recorrido completo.
+        """
+        try:
+            rel = self._normalizar_ruta(ruta)
+        except ValueError:
+            return {
+                "ready": False,
+                "path": ruta,
+                "error": "ruta no válida",
+                "dirs": [],
+                "files": [],
+            }
+
+        base = (self.raiz / rel) if rel else self.raiz
+        if not self._dentro_de_raiz(base):
+            return {
+                "ready": False,
+                "path": rel,
+                "error": "ruta fuera de la NAS",
+                "dirs": [],
+                "files": [],
+            }
+
+        try:
+            iterator = os.scandir(base)
+        except OSError as exc:
+            return {
+                "ready": False,
+                "path": rel,
+                "error": f"no se pudo abrir la carpeta: {exc}",
+                "dirs": [],
+                "files": [],
+            }
+
+        carpetas: list[dict] = []
+        archivos: list[dict] = []
+        with iterator:
+            for item in iterator:
+                if len(carpetas) + len(archivos) >= limite:
+                    break
+                nombre = item.name
+                if nombre.startswith(".") or nombre.lower() in _SKIP_DIRS:
+                    continue
+                try:
+                    if item.is_dir(follow_symlinks=False):
+                        carpetas.append(
+                            {
+                                "name": nombre,
+                                "path": f"{rel}/{nombre}" if rel else nombre,
+                            }
+                        )
+                    elif item.is_file(follow_symlinks=False):
+                        stat = item.stat(follow_symlinks=False)
+                        archivos.append(
+                            {
+                                "name": nombre,
+                                "path": f"{rel}/{nombre}" if rel else nombre,
+                                "size": stat.st_size,
+                                "modified": datetime.fromtimestamp(
+                                    stat.st_mtime, tz=timezone.utc
+                                ).isoformat(),
+                                "ext": Path(nombre).suffix.lower(),
+                            }
+                        )
+                except OSError:
+                    continue
+
+        carpetas.sort(key=lambda d: d["name"].casefold())
+        archivos.sort(key=lambda f: f["modified"], reverse=True)
+        with self._lock:
+            truncado = self._truncado
+        return {
+            "ready": True,
+            "path": rel,
+            "parent": rel.rsplit("/", 1)[0] if "/" in rel else "",
+            "dirs": carpetas,
+            "files": archivos,
+            "truncated_index": truncado,
+            "error": None,
+        }
+
+    def archivo(self, ruta: str) -> Path:
+        """Devuelve la ruta real de un archivo dentro de la NAS.
+
+        Lanza ValueError si la ruta escapa (incluidos symlinks que apunten
+        fuera) y FileNotFoundError si no es un archivo.
+        """
+        rel = self._normalizar_ruta(ruta)
+        if not rel:
+            raise ValueError("ruta vacía")
+        destino = self.raiz / rel
+        if not self._dentro_de_raiz(destino):
+            raise ValueError("ruta fuera de la NAS")
+        resuelto = destino.resolve()
+        if not resuelto.is_file():
+            raise FileNotFoundError(rel)
+        return resuelto
+
     def estado(self) -> dict:
         listo = self.asegurar(0.0)
         with self._lock:
@@ -343,6 +537,8 @@ class IndiceNAS:
                 "error": self._error,
                 "refresh_s": self.refresh_s,
                 "max_files": self.max_files,
+                "cache": str(self.cache_path) if self.cache_path else None,
+                "cache_loaded": self._cache_leido,
             }
 
 
