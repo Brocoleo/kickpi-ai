@@ -1019,6 +1019,16 @@ export function Chat({
             enLote: lote.length,
           });
         }
+        // Feedback de fin: deja la barra un instante con "completado"
+        // antes de borrarla; así se ve el 100 % y el texto.
+        setProgreso({
+          hechos: nuevos.length,
+          total: nuevos.length,
+          lote: lotes.length,
+          lotes: lotes.length,
+          enLote: 0,
+        });
+        await new Promise<void>((listo) => window.setTimeout(listo, 900));
       } finally {
         soltarPantalla(wake);
       }
