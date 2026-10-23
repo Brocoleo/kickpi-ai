@@ -205,3 +205,36 @@ export type Approvals = {
   approvals: Approval[];
   count: number;
 };
+
+export type NasEntry = {
+  name: string;
+  path: string;
+  size?: number;
+  modified?: string;
+  ext?: string;
+};
+
+export type NasListing = {
+  ready: boolean;
+  path: string;
+  parent?: string;
+  dirs: { name: string; path: string }[];
+  files: NasEntry[];
+  error: string | null;
+  truncated_index?: boolean;
+};
+
+export type NasRecent = {
+  ready: boolean;
+  files: NasEntry[];
+  error: string | null;
+  truncated_index?: boolean;
+};
+
+export type NasSearchResult = {
+  ready: boolean;
+  query: string;
+  results: (NasEntry & { match?: string; snippet?: string })[];
+  total_matches: number;
+  error: string | null;
+};

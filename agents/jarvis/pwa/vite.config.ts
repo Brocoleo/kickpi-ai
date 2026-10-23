@@ -81,5 +81,15 @@ export default defineConfig({
   build: {
     outDir: "../agent/static",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // React cambia poco y el código de la app cambia a menudo: separarlos
+        // permite que el iPhone reutilice el chunk de vendor entre despliegues.
+        manualChunks: (id: string) => {
+          if (id.includes("node_modules/react")) return "react";
+          return undefined;
+        },
+      },
+    },
   },
 });

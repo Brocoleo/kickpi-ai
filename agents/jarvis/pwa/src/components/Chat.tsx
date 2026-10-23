@@ -307,6 +307,9 @@ export function Chat({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Paginación del historial: 50 por página, sin traer todo de golpe.
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   // Herramienta ejecutándose AHORA (evento tool_start): se muestra en vivo
   // dentro de la burbuja, no como un paso ya terminado.
   const [liveTool, setLiveTool] = useState<string | null>(null);
@@ -328,16 +331,35 @@ export function Chat({
 
   const refreshConversations = useCallback(async (): Promise<Conversation[]> => {
     try {
-      const data = await api.conversations();
+      const data = await api.conversations(0, 50);
       // Defensivo: un backend viejo (o un mock) puede no traer la lista.
       const items = Array.isArray(data?.conversations) ? data.conversations : [];
       setConversations(items);
+      setHistoryHasMore(Boolean(data?.has_more));
       return items;
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onUnauthorized();
       return [];
     }
   }, [onUnauthorized]);
+
+  const loadMoreConversations = useCallback(async () => {
+    if (historyLoading) return;
+    setHistoryLoading(true);
+    try {
+      const data = await api.conversations(conversations.length, 50);
+      const items = Array.isArray(data?.conversations) ? data.conversations : [];
+      setConversations((prev) => {
+        const vistos = new Set(prev.map((item) => item.id));
+        return [...prev, ...items.filter((item) => !vistos.has(item.id))];
+      });
+      setHistoryHasMore(Boolean(data?.has_more));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) onUnauthorized();
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [conversations.length, historyLoading, onUnauthorized]);
 
   const loadConversation = useCallback(
     async (id: string): Promise<boolean> => {
@@ -1014,6 +1036,16 @@ export function Chat({
                   )}
                 </div>
               ))}
+              {historyHasMore && (
+                <button
+                  type="button"
+                  className="ghost-btn history-more"
+                  disabled={historyLoading}
+                  onClick={() => void loadMoreConversations()}
+                >
+                  {historyLoading ? "Cargando…" : "Cargar más"}
+                </button>
+              )}
             </div>
           </aside>
         </div>

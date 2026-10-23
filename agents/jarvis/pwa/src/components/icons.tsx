@@ -196,3 +196,29 @@ export function DeviceIcon(props: IconProps) {
     </Base>
   );
 }
+
+export function SearchIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4.5 4.5" />
+    </Base>
+  );
+}
+
+export function FileIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M6 3h7l5 5v13H6z" />
+      <path d="M13 3v5h5M9 13h6M9 17h4" />
+    </Base>
+  );
+}
+
+export function ChevronLeftIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="m14 6-6 6 6 6" />
+    </Base>
+  );
+}

@@ -181,7 +181,7 @@ export default function App() {
         {tab === "equipos" && <Equipos onUnauthorized={handleUnauthorized} />}
         {filesReady && (
           <div className="tab-pane" hidden={tab !== "files"}>
-            <Files />
+            <Files csrfToken={csrfToken} onUnauthorized={handleUnauthorized} />
           </div>
         )}
         {tab === "approvals" && (

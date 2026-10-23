@@ -10,6 +10,9 @@ import type {
   Equipos,
   Health,
   LlmStatus,
+  NasListing,
+  NasRecent,
+  NasSearchResult,
   StoredMessage,
   SystemStats,
   ToolTrace,
@@ -310,8 +313,44 @@ export const api = {
       body: JSON.stringify({ conversation_id: conversationId }),
     }),
 
-  conversations: () =>
-    request<{ conversations: Conversation[]; count: number }>("/conversations"),
+  /** NAS nativo de la PWA (solo lectura; el agente hace de proxy). */
+  nasList: (path = "", limit = 300) =>
+    request<NasListing>(
+      `/nas/list?path=${encodeURIComponent(path)}&limit=${limit}`,
+    ),
+
+  nasRecent: (limit = 30, path = "") =>
+    request<NasRecent>(
+      `/nas/recent?limit=${limit}&path=${encodeURIComponent(path)}`,
+    ),
+
+  nasSearch: (q: string, content = true, limit = 30) =>
+    request<NasSearchResult>(
+      `/nas/search?q=${encodeURIComponent(q)}&content=${content}&limit=${limit}`,
+    ),
+
+  /** URL de una miniatura o descarga (la sesión viaja en la cookie). */
+  nasFileUrl: (path: string, download = false) =>
+    `/api/nas/file?path=${encodeURIComponent(path)}${
+      download ? "&download=true" : ""
+    }`,
+
+  /** Borra un adjunto de Entrada/ (sesión humana + CSRF). */
+  deleteNasFile: (path: string, csrfToken: string | null) =>
+    request<{ ok: boolean; path: string }>(
+      `/files?path=${encodeURIComponent(path)}`,
+      {
+        method: "DELETE",
+        headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+      },
+    ),
+
+  conversations: (offset = 0, limit = 50) =>
+    request<{
+      conversations: Conversation[];
+      count: number;
+      has_more?: boolean;
+    }>(`/conversations?offset=${offset}&limit=${limit}`),
 
   conversation: (id: string) =>
     request<{ conversation_id: string; messages: StoredMessage[] }>(

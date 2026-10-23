@@ -2772,3 +2772,396 @@ body.modal-open .tabbar {
     visibility: hidden;
   }
 }
+
+/* --------------------------------------------------- NAS nativo (pestaña) */
+.files-screen {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.nas-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.nas-search:focus-within {
+  border-color: rgba(94, 234, 212, 0.45);
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.08);
+}
+
+.nas-search-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--muted);
+}
+
+.nas-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 15px;
+}
+
+.nas-search input::placeholder {
+  color: var(--muted);
+}
+
+.nas-search .icon-btn {
+  width: 34px;
+  height: 34px;
+  flex: none;
+}
+
+.nas-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nas-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.nas-tab {
+  min-height: 40px;
+  padding: 8px 13px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.nas-tab.active {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nas-tab-avanzado {
+  margin-left: auto;
+}
+
+.nas-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  overflow-x: auto;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.nas-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.nas-crumbs button {
+  padding: 7px 5px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.nas-crumbs button:hover,
+.nas-crumbs button:focus-visible {
+  color: var(--text);
+}
+
+.nas-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.nas-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nas-folder {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+
+.nas-folder:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.nas-folder svg {
+  width: 19px;
+  height: 19px;
+  flex: none;
+  color: var(--accent);
+}
+
+.nas-folder span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nas-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nas-file {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 11px;
+}
+
+.nas-file:hover {
+  background: var(--surface);
+}
+
+.nas-file-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.nas-thumb,
+.nas-file-icon {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border-radius: 8px;
+}
+
+.nas-thumb {
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.nas-file-icon {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.nas-file-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.nas-file-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.nas-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.nas-file-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nas-download {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  color: var(--muted);
+}
+
+.nas-file-wrap {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.nas-file-wrap:last-child {
+  border-bottom: 0;
+}
+
+.nas-snippet {
+  margin: 0 8px 4px 61px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.nas-badge {
+  margin: 0 8px 6px 61px;
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.nas-status,
+.nas-empty {
+  margin: 8px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.nas-error {
+  margin: 8px 4px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.nas-frame-wrap {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.nas-frame-wrap .files-frame {
+  flex: 1;
+  min-height: 0;
+}
+
+.nas-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(4, 6, 9, 0.86);
+  backdrop-filter: blur(10px);
+}
+
+.nas-lightbox figure {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(100%, 960px);
+  max-height: 100%;
+  margin: 0;
+}
+
+.nas-lightbox img {
+  max-width: 100%;
+  max-height: calc(100dvh - 150px);
+  object-fit: contain;
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.nas-lightbox figcaption {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.nas-lightbox figcaption span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nas-lightbox-close {
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top));
+  right: 14px;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: rgba(15, 20, 28, 0.9);
+  border: 1px solid var(--border);
+}
+
+.history-more {
+  width: calc(100% - 16px);
+  margin: 10px 8px 4px;
+  justify-content: center;
+}
+
+/* Accesibilidad táctil: nada por debajo de 44 px en acciones principales. */
+@media (pointer: coarse) {
+  .nas-tab,
+  .nas-file-main,
+  .nas-folder,
+  .nas-download,
+  .nas-search .icon-btn {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+.nas-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.nas-danger {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.nas-danger:hover {
+  background: rgba(248, 113, 113, 0.1);
+}
