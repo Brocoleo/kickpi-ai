@@ -53,6 +53,7 @@ from .security import (
     login_allowed,
     new_session_token,
     record_login_failure,
+    reservar_uploads,
     reset_login_failures,
     session_fingerprint,
     upload_allowed,
@@ -63,7 +64,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.18.0"
+VERSION = "0.19.0"
 
 # Extensiones que no se aceptan como adjuntos. No se ejecutan en el servidor,
 # pero la NAS no debe convertirse en un depósito de programas descargables.
@@ -82,6 +83,14 @@ _UPLOAD_BLOCKED_EXT = {
 
 # Clasificación automática de adjuntos dentro de Entrada/: las reglas viven en
 # `classifier_rules.json` (extensión manda; el content_type es respaldo).
+
+# Subida por lotes (F7): el cliente manda varios archivos en una petición.
+# Los topes son de seguridad, no de UX: 50 archivos y 500 MB por request.
+# Con lotes de 10 en la PWA, 100 fotos son 10 peticiones y ninguna se acerca
+# al tope de peso.
+MAX_LOTE_ARCHIVOS = 50
+MAX_LOTE_BYTES = 500 * 1024 * 1024
+_AVISO_RATE = "Demasiadas subidas seguidas. Espera un momento."
 
 
 def _carpeta_adjunto(
@@ -1009,23 +1018,170 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     max_mb, subidas_min, reglas = await asyncio.to_thread(
         config_store.ajustes_subida
     )
-    limite = max_mb * 1024 * 1024
     inbox = Path(settings.nas_inbox_dir)
 
     # El freno por IP va antes de tocar el disco. Detrás de Tailscale Serve
     # el socket es local, así que se prefiere X-Forwarded-For.
-    xff = request.headers.get("x-forwarded-for", "")
-    ip = xff.split(",")[0].strip() if xff else (
-        request.client.host if request.client else "desconocida"
-    )
+    ip = _ip_cliente(request)
     permitido, reintentar = upload_allowed(ip, subidas_min)
     if not permitido:
         raise HTTPException(
             429,
-            "Demasiadas subidas seguidas. Espera un momento.",
+            _AVISO_RATE,
             headers={"Retry-After": str(reintentar)},
         )
 
+    resultado = await _guardar_adjunto(
+        file,
+        inbox=inbox,
+        inbox_rel=settings.nas_inbox_rel,
+        uid=settings.nas_inbox_uid,
+        gid=settings.nas_inbox_gid,
+        limite=max_mb * 1024 * 1024,
+        max_mb=max_mb,
+        reglas=reglas,
+    )
+
+    # Invalidar la caché del índice para la carpeta Entrada (cubre las
+    # subcarpetas), de modo que búsquedas posteriores vean el archivo al
+    # instante (sin esperar 15 min).
+    await _refrescar_indice_nas()
+    return resultado
+
+
+@app.post(
+    "/api/files/upload-batch",
+    tags=["files"],
+    dependencies=[Depends(require_human_mutation)],
+)
+async def upload_batch(request: Request, files: list[UploadFile] = File(...)) -> dict:
+    """Sube un lote de adjuntos en UNA petición (hasta 50 archivos / 500 MB).
+
+    Cada archivo se valida y clasifica por separado: si uno falla (tipo no
+    admitido, demasiado grande…), el resto del lote sigue y el fallo viaja
+    en su propio resultado. La respuesta es 200 aunque haya fallos parciales;
+    solo se corta con 4xx cuando el lote entero no cabe (demasiados archivos,
+    demasiado peso o límite por IP), y en ese caso NO se escribe nada que no
+    se haya borrado antes de responder.
+
+    Es la puerta para seleccionar 100 fotos de una vez: la PWA divide esa
+    selección en lotes (10 por defecto, menos si el freno por minuto es
+    menor) y los manda en serie.
+    """
+    if not files:
+        raise HTTPException(400, "No se recibió ningún archivo en el lote")
+    if len(files) > MAX_LOTE_ARCHIVOS:
+        raise HTTPException(
+            413,
+            f"Máximo {MAX_LOTE_ARCHIVOS} archivos por lote "
+            f"(llegaron {len(files)}): divide la selección en tandas más pequeñas",
+        )
+
+    settings = get_settings()
+    max_mb, subidas_min, reglas = await asyncio.to_thread(
+        config_store.ajustes_subida
+    )
+    inbox = Path(settings.nas_inbox_dir)
+    ip = _ip_cliente(request)
+
+    # Reservar los huecos del lote completo antes de escribir: si no caben,
+    # 429 sin dejar medio lote en disco. Se cuentan archivos, no peticiones.
+    permitido, reintentar = reservar_uploads(ip, len(files), subidas_min)
+    if not permitido:
+        if reintentar == 0:
+            # El lote es mayor que la ventana entera: esperar no ayuda.
+            raise HTTPException(
+                413,
+                f"El lote de {len(files)} archivos no cabe en el límite de "
+                f"{subidas_min} subidas por minuto: divídelo o sube el límite "
+                "en Ajustes → NAS",
+            )
+        raise HTTPException(
+            429,
+            f"{_AVISO_RATE} El lote necesita {len(files)} huecos y el límite "
+            f"es {subidas_min} por minuto.",
+            headers={"Retry-After": str(reintentar)},
+        )
+
+    resultados: list[dict] = []
+    escritos: list[Path] = []
+    total = 0
+    for file in files:
+        try:
+            resultado = await _guardar_adjunto(
+                file,
+                inbox=inbox,
+                inbox_rel=settings.nas_inbox_rel,
+                uid=settings.nas_inbox_uid,
+                gid=settings.nas_inbox_gid,
+                limite=max_mb * 1024 * 1024,
+                max_mb=max_mb,
+                reglas=reglas,
+                escritos=escritos,
+            )
+        except HTTPException as exc:
+            resultados.append(
+                {
+                    "ok": False,
+                    "name": Path(file.filename or "adjunto").name,
+                    "error": str(exc.detail),
+                }
+            )
+            continue
+        resultados.append(resultado)
+        total += int(resultado.get("size", 0))
+        if total > MAX_LOTE_BYTES:
+            # El lote entero no cabe: se deshace lo ya escrito para no dejar
+            # un lote a medias (el cliente puede reintentar en tandas).
+            for ruta in escritos:
+                try:
+                    ruta.unlink(missing_ok=True)
+                except OSError as exc:  # limpieza best-effort
+                    log.warning("no se pudo deshacer %s: %s", ruta, exc)
+            for pendiente in files:
+                await pendiente.close()
+            raise HTTPException(
+                413,
+                f"El lote supera {MAX_LOTE_BYTES // (1024 * 1024)} MB: "
+                "divide la selección en tandas más pequeñas",
+            )
+
+    subidos = sum(1 for item in resultados if item.get("ok"))
+    if subidos:
+        await _refrescar_indice_nas()
+    return {
+        "ok": subidos == len(files),
+        "results": resultados,
+        "uploaded": subidos,
+        "failed": len(resultados) - subidos,
+    }
+
+
+def _ip_cliente(request: Request) -> str:
+    """IP real del cliente detrás de Tailscale Serve."""
+    xff = request.headers.get("x-forwarded-for", "")
+    return xff.split(",")[0].strip() if xff else (
+        request.client.host if request.client else "desconocida"
+    )
+
+
+async def _guardar_adjunto(
+    file: UploadFile,
+    *,
+    inbox: Path,
+    inbox_rel: str,
+    uid: int,
+    gid: int,
+    limite: int,
+    max_mb: int,
+    reglas: dict | None,
+    escritos: list[Path] | None = None,
+) -> dict:
+    """Valida y escribe UN adjunto en `inbox`. Devuelve `{ok, path, name, size, folder}`.
+
+    Lanza `HTTPException` con un mensaje accionable si el archivo no vale;
+    en ese caso no deja restos. La usan tanto la subida suelta como el lote.
+    """
     nombre_original = Path(file.filename or "adjunto").name
     # Fuera separadores y caracteres de control; se conservan acentos.
     limpio = re.sub(r"[^\w.\- ]+", "_", nombre_original, flags=re.UNICODE).strip(" .")
@@ -1045,7 +1201,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
         # La subcarpeta también debe ser del usuario del host: si la crea root,
         # FileBrowser no puede ordenar ni borrar dentro de ella.
         try:
-            os.chown(destino_dir, settings.nas_inbox_uid, settings.nas_inbox_gid)
+            os.chown(destino_dir, uid, gid)
         except OSError:
             pass
         destino = (destino_dir / nombre).resolve()
@@ -1086,25 +1242,22 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
 
     # El contenedor corre como root; FileBrowser y el usuario del host no.
     try:
-        os.chown(destino, settings.nas_inbox_uid, settings.nas_inbox_gid)
+        os.chown(destino, uid, gid)
     except OSError:
         pass
 
     # Ruta relativa a la RAÍZ del NAS (no al inbox): es la que devuelven
     # nas_list/nas_recent y la que la PWA usa para borrar.
-    relativa = f"{settings.nas_inbox_rel.strip('/')}/{carpeta}/{nombre}"
+    relativa = f"{inbox_rel.strip('/')}/{carpeta}/{nombre}"
     log.info("adjunto guardado en la NAS: %s (%d bytes)", relativa, tamano)
-
-    # Invalidar la caché del índice para la carpeta Entrada (cubre las
-    # subcarpetas), de modo que búsquedas posteriores vean el archivo al
-    # instante (sin esperar 15 min).
-    await _refrescar_indice_nas()
-
+    if escritos is not None:
+        escritos.append(destino)
     return {
         "ok": True,
         "path": relativa,
         "name": limpio,
         "size": tamano,
+        "folder": carpeta,
     }
 
 

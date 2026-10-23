@@ -15,7 +15,7 @@ import type {
   ToolCall,
   ToolTrace,
 } from "../types";
-import type { UploadResult } from "../api";
+import type { UploadBatchResult, UploadResult } from "../api";
 import {
   HistoryIcon,
   PaperclipIcon,
@@ -199,8 +199,45 @@ function peso(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+/** Texto derecho del chip: estado, o carpeta y peso cuando ya está listo. */
+function detalleAdjunto(adjunto: AdjuntoPendiente): string {
+  if (adjunto.estado === "error") return "Error";
+  if (adjunto.estado === "cola") return "En cola";
+  if (adjunto.estado === "subiendo") return "Subiendo…";
+  const carpeta = adjunto.resultado?.folder
+    ? `${adjunto.resultado.folder} · `
+    : "";
+  return `${carpeta}${peso(adjunto.resultado?.size ?? adjunto.file.size)}`;
+}
 
-/** Fecha compacta para la lista de conversaciones. */
+/**
+ * Reparte la selección en lotes por cantidad **y por peso**.
+ *
+ * El endpoint corta en 500 MB por petición y deshace el lote entero si se
+ * pasa: mejor mandar 2 lotes de 300 MB que uno de 600 que se rechaza.
+ */
+function repartirLotes(
+  adjuntos: AdjuntoPendiente[],
+  tamanoMaximo: number,
+): AdjuntoPendiente[][] {
+  const lotes: AdjuntoPendiente[][] = [];
+  let actual: AdjuntoPendiente[] = [];
+  let bytes = 0;
+  for (const adjunto of adjuntos) {
+    const lleno =
+      actual.length >= tamanoMaximo ||
+      (actual.length > 0 && bytes + adjunto.file.size > LOTE_MAXIMO_BYTES);
+    if (lleno) {
+      lotes.push(actual);
+      actual = [];
+      bytes = 0;
+    }
+    actual.push(adjunto);
+    bytes += adjunto.file.size;
+  }
+  if (actual.length > 0) lotes.push(actual);
+  return lotes;
+}/** Fecha compacta para la lista de conversaciones. */
 function fechaLista(iso: string): string {
   const fecha = new Date(iso);
   if (Number.isNaN(fecha.getTime())) return "";
@@ -281,15 +318,33 @@ function nombreArchivo(extension: string): string {
 type AdjuntoPendiente = {
   id: string;
   file: File;
-  estado: "subiendo" | "listo" | "error";
+  estado: "cola" | "subiendo" | "listo" | "error";
   resultado?: UploadResult;
   error?: string;
 };
 
-const MAX_ADJUNTOS = 10;
+/** Avance de una tanda de subida (barra sobre los chips). */
+type ProgresoSubida = {
+  /** Archivos ya resueltos (listos o con error). */
+  hechos: number;
+  total: number;
+  /** Lote en curso (1-based) y cuántos lotes tiene la tanda. */
+  lote: number;
+  lotes: number;
+};
+
+/** Tope de archivos por mensaje: 100 fotos de una vez es el caso real. */
+const MAX_ADJUNTOS = 100;
+/** Archivos por petición: 10 × 50 MB = 500 MB, el tope del endpoint batch. */
+const LOTE_MAXIMO = 10;
+/** Peso por petición: por debajo del corte del servidor (500 MB). */
+const LOTE_MAXIMO_BYTES = 450 * 1024 * 1024;
+/** Reintentos ante 429 (límite por IP) antes de marcar el lote en error. */
+const REINTENTOS_429 = 3;
+/** Tope de espera que se acepta del `Retry-After` (no dormir 10 minutos). */
+const ESPERA_MAXIMA_S = 120;
 /** Respaldo si la config del NAS aún no llegó. */
 const MAX_ADJUNTOS_MB = 50;
-const SUBIDAS_EN_PARALELO = 3;
 
 // `scrollTo` no existe en todos los entornos (jsdom, navegadores viejos):
 // sin la alternativa, el efecto rompería al pintar el historial.
@@ -331,10 +386,20 @@ export function Chat({
   // en el mensaje para que el modelo no tenga que buscarlos a ciegas.
   const [adjuntos, setAdjuntos] = useState<AdjuntoPendiente[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Avance del lote en curso (null cuando no se está subiendo nada).
+  const [progreso, setProgreso] = useState<ProgresoSubida | null>(null);
+  // Segundos que se está esperando por el límite de subidas (429).
+  const [espera, setEspera] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   // Límite real por archivo: lo fija Ajustes → NAS (la subida lo revalida).
   const [limiteMb, setLimiteMb] = useState(MAX_ADJUNTOS_MB);
-  const subiendo = adjuntos.some((a) => a.estado === "subiendo");
+  // Archivos por petición: nunca más que el freno por minuto, o el lote
+  // entero se rechazaría (413 «no cabe»). Si el ajuste cambia, se relee al
+  // recargar la PWA.
+  const [tamanoLote, setTamanoLote] = useState(LOTE_MAXIMO);
+  const subiendo = adjuntos.some(
+    (a) => a.estado === "subiendo" || a.estado === "cola",
+  );
   const adjuntosListos = adjuntos.filter(
     (a) => a.estado === "listo" && a.resultado,
   );
@@ -404,7 +469,13 @@ export function Chat({
   useEffect(() => {
     api
       .nasConfig()
-      .then((config) => setLimiteMb(config.upload_max_mb))
+      .then((config) => {
+        setLimiteMb(config.upload_max_mb);
+        const porMinuto = config.upload_rate_per_min;
+        setTamanoLote(
+          porMinuto > 0 ? Math.min(LOTE_MAXIMO, porMinuto) : LOTE_MAXIMO,
+        );
+      })
       .catch(() => {
         /* sin drama: la subida revalida en el servidor */
       });
@@ -746,11 +817,15 @@ export function Chat({
   }
 
   /**
-   * Sube los archivos elegidos con un máximo de 3 en vuelo.
+   * Sube los archivos elegidos en lotes (`tamanoLote`), uno detrás de otro.
    *
-   * El endpoint ya limita por IP (60/min): paralelizar de más solo provoca
-   * 429 y chips en error. Cada archivo se resuelve por separado; si uno
-   * falla, los demás siguen y el fallido se puede quitar sin perder el resto.
+   * Cada lote es UNA petición al endpoint batch. El servidor procesa sus
+   * archivos en serie y devuelve el resultado de cada uno: si uno falla, los
+   * demás siguen. La barra muestra «Lote X de Y · hechos/total».
+   *
+   * Si el lote no cabe en el límite por IP (429), se espera lo que pida
+   * `Retry-After` y se reintenta ese mismo lote; el resto espera su turno.
+   * Nada de esto se guarda en disco hasta que el servidor lo confirma.
    */
   async function attachFile(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const elegidos = Array.from(event.target.files ?? []);
@@ -770,7 +845,7 @@ export function Chat({
         sobrantes += 1;
         continue;
       }
-      nuevos.push({ id: uid(), file, estado: "subiendo" });
+      nuevos.push({ id: uid(), file, estado: "cola" });
     }
     const avisos: string[] = [];
     if (grandes) avisos.push(`Máximo ${limiteMb} MB por archivo`);
@@ -779,38 +854,112 @@ export function Chat({
     if (!nuevos.length) return;
     setAdjuntos((prev) => [...prev, ...nuevos]);
 
-    let siguiente = 0;
-    const trabajador = async (): Promise<void> => {
-      while (siguiente < nuevos.length) {
-        const actual = nuevos[siguiente];
-        siguiente += 1;
-        try {
-          const resultado = await api.uploadFile(actual.file, csrfToken);
-          setAdjuntos((prev) =>
-            prev.map((a) =>
-              a.id === actual.id ? { ...a, estado: "listo", resultado } : a,
-            ),
-          );
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 401) onUnauthorized();
-          const mensaje =
-            err instanceof Error ? err.message : "No se pudo subir el archivo";
-          setAdjuntos((prev) =>
-            prev.map((a) =>
-              a.id === actual.id
-                ? { ...a, estado: "error", error: mensaje }
-                : a,
-            ),
-          );
-        }
-      }
+    const lotes = repartirLotes(nuevos, tamanoLote);
+    let hechos = 0;
+    setProgreso({ hechos: 0, total: nuevos.length, lote: 1, lotes: lotes.length });
+
+    /** Vuelca el resultado del lote en sus chips (por id, no por posición). */
+    const marcarLote = (
+      lote: AdjuntoPendiente[],
+      respuesta: UploadBatchResult,
+    ): void => {
+      setAdjuntos((prev) =>
+        prev.map((chip) => {
+          const indice = lote.findIndex((item) => item.id === chip.id);
+          if (indice < 0) return chip;
+          const resultado = respuesta.results[indice];
+          if (!resultado) {
+            return {
+              ...chip,
+              estado: "error",
+              error: "El servidor no devolvió resultado para este archivo",
+            };
+          }
+          return resultado.ok
+            ? { ...chip, estado: "listo", resultado }
+            : { ...chip, estado: "error", error: resultado.error };
+        }),
+      );
     };
-    await Promise.all(
-      Array.from(
-        { length: Math.min(SUBIDAS_EN_PARALELO, nuevos.length) },
-        trabajador,
-      ),
-    );
+
+    try {
+      for (let indice = 0; indice < lotes.length; indice += 1) {
+        const lote = lotes[indice];
+        const numero = indice + 1;
+        // Los chips del lote pasan de «en cola» a «subiendo» al arrancar.
+        const ids = new Set(lote.map((item) => item.id));
+        setAdjuntos((prev) =>
+          prev.map((chip) =>
+            ids.has(chip.id) && chip.estado === "cola"
+              ? { ...chip, estado: "subiendo" }
+              : chip,
+          ),
+        );
+        setProgreso({
+          hechos,
+          total: nuevos.length,
+          lote: numero,
+          lotes: lotes.length,
+        });
+
+        let respuesta: UploadBatchResult | null = null;
+        let ultimoError: unknown = null;
+        for (let intento = 1; intento <= REINTENTOS_429; intento += 1) {
+          try {
+            respuesta = await api.uploadBatch(
+              lote.map((item) => item.file),
+              csrfToken,
+            );
+            break;
+          } catch (err) {
+            ultimoError = err;
+            if (err instanceof ApiError && err.status === 401) {
+              onUnauthorized();
+              throw err;
+            }
+            const segundos =
+              err instanceof ApiError && err.status === 429
+                ? Math.min(
+                    ESPERA_MAXIMA_S,
+                    Math.max(0, err.retryAfter ?? 30),
+                  )
+                : 0;
+            if (segundos <= 0 || intento === REINTENTOS_429) throw err;
+            setEspera(segundos);
+            await new Promise<void>((listo) =>
+              window.setTimeout(listo, segundos * 1000),
+            );
+            setEspera(null);
+          }
+        }
+        if (!respuesta) throw ultimoError ?? new Error("No se pudo subir el lote");
+
+        marcarLote(lote, respuesta);
+        hechos += lote.length;
+        setProgreso({
+          hechos,
+          total: nuevos.length,
+          lote: numero,
+          lotes: lotes.length,
+        });
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) onUnauthorized();
+      const mensaje =
+        err instanceof Error ? err.message : "No se pudo subir el archivo";
+      // Un fallo del lote deja en error lo que siga pendiente: el usuario ve
+      // exactamente qué no llegó y puede quitarlo o reintentarlo.
+      setAdjuntos((prev) =>
+        prev.map((chip) =>
+          chip.estado === "subiendo" || chip.estado === "cola"
+            ? { ...chip, estado: "error", error: mensaje }
+            : chip,
+        ),
+      );
+    } finally {
+      setEspera(null);
+      setProgreso(null);
+    }
   }
 
   async function stopTurn(): Promise<void> {
@@ -842,6 +991,8 @@ export function Chat({
     setLiveTool(null);
     setAdjuntos([]);
     setUploadError(null);
+    setProgreso(null);
+    setEspera(null);
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(STORAGE_KEY);
     setInput("");
@@ -1284,6 +1435,26 @@ export function Chat({
           void send();
         }}
       >
+        {progreso && (
+          <div className="attach-progress" role="status">
+            <span>
+              Lote {progreso.lote} de {progreso.lotes} · {progreso.hechos}/
+              {progreso.total}
+              {espera !== null
+                ? ` · esperando ${espera} s por el límite de subidas`
+                : ""}
+            </span>
+            <div className="attach-bar" aria-hidden="true">
+              <span
+                style={{
+                  width: `${Math.round(
+                    (progreso.hechos / Math.max(1, progreso.total)) * 100,
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
         {adjuntos.length > 0 && (
           <div className="attach-list" aria-live="polite">
             {adjuntos.map((a) => (
@@ -1299,17 +1470,13 @@ export function Chat({
                 >
                   {a.file.name}
                 </span>
-                <span className="attach-where">
-                  {a.estado === "error"
-                    ? "Error"
-                    : peso(a.resultado?.size ?? a.file.size)}
-                </span>
+                <span className="attach-where">{detalleAdjunto(a)}</span>
                 <button
                   type="button"
                   className="attach-remove"
                   aria-label={`Quitar ${a.file.name}`}
                   onClick={() => quitarAdjunto(a.id)}
-                  disabled={sending}
+                  disabled={sending || subiendo}
                 >
                   <XIcon />
                 </button>
@@ -1332,14 +1499,14 @@ export function Chat({
           multiple
           aria-label="Archivos para adjuntar"
           onChange={(event) => void attachFile(event)}
-          disabled={sending}
+          disabled={sending || subiendo}
         />
         <button
           type="button"
           className="icon-btn attach-btn"
           aria-label="Adjuntar archivos"
           onClick={() => fileRef.current?.click()}
-          disabled={sending}
+          disabled={sending || subiendo}
         >
           {subiendo ? <RefreshIcon className="spin-icon" /> : <PaperclipIcon />}
         </button>

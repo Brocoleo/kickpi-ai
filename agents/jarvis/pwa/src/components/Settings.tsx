@@ -237,6 +237,11 @@ export function Settings({ me, csrfToken, onLogout, onUnauthorized }: Props) {
                 }}
               />
             </label>
+            <p className="muted">
+              Cuenta archivos, no peticiones: 100 fotos consumen 100. El chat
+              manda lotes de 10 (o del tamaño del límite si es menor) y, si se
+              pasa, espera y reintenta solo.
+            </p>
             <details>
               <summary>Reglas de clasificación (JSON)</summary>
               <textarea

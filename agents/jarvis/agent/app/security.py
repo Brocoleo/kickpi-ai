@@ -118,16 +118,39 @@ def upload_allowed(ip: str, limit: int) -> tuple[bool, int]:
     Si el agente se reinicia, el contador también; no es un control de
     cuotas, es un freno para que un error o un script no llenen el disco.
     """
-    if limit <= 0:
+    return reservar_uploads(ip, 1, limit)
+
+
+def reservar_uploads(ip: str, cantidad: int, limit: int) -> tuple[bool, int]:
+    """Reserva `cantidad` huecos de golpe (para una subida por lotes).
+
+    Se reservan ANTES de tocar el disco: si el lote no cabe en la ventana,
+    responde 429 sin escribir nada, en vez de dejar medio lote dentro.
+    La cuenta sigue siendo **por archivo** (no por petición): un lote de 20
+    consume 20 huecos, igual que 20 subidas sueltas. El ajuste «subidas por
+    minuto» conserva así su significado real.
+
+    Devuelve `(False, 0)` cuando el lote es más grande que el límite entero:
+    esperar no lo arregla (hay que dividirlo o subir el límite), a diferencia
+    de `(False, segundos)`, que sí se resuelve esperando.
+    """
+    cantidad = max(0, int(cantidad))
+    if limit <= 0 or cantidad == 0:
         return True, 0
     ahora = time.monotonic()
     with _upload_lock:
         hits = [t for t in _upload_hits.get(ip, []) if ahora - t < _UPLOAD_WINDOW_S]
-        if len(hits) >= limit:
+        if len(hits) + cantidad > limit:
+            if not hits:
+                # Ni con la ventana vacía cabe: no es cuestión de esperar.
+                _upload_hits[ip] = hits
+                return False, 0
+            # `hits[0]` es la entrada más antigua: cuando salga de la ventana
+            # habrá sitio (para al menos un hueco).
             reintentar = max(1, int(_UPLOAD_WINDOW_S - (ahora - hits[0])) + 1)
             _upload_hits[ip] = hits
             return False, reintentar
-        hits.append(ahora)
+        hits.extend([ahora] * cantidad)
         _upload_hits[ip] = hits
         # Higiene: no acumular IPs que ya no aparecen.
         if len(_upload_hits) > 512:

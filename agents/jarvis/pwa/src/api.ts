@@ -20,12 +20,35 @@ import type {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** Segundos que pide esperar el servidor (`Retry-After`), si los hay. */
+  readonly retryAfter?: number;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, retryAfter?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.retryAfter = retryAfter;
   }
+}
+
+/** `Retry-After` en segundos, saneado (solo se usa para esperar y reintentar). */
+function retryAfterDe(res: Response): number | undefined {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return undefined;
+  const segundos = Number(raw);
+  return Number.isFinite(segundos) && segundos >= 0 ? segundos : undefined;
+}
+
+/** Error HTTP con el `detail` del backend (que ya viene redactado para la UI). */
+async function errorDeRespuesta(res: Response): Promise<ApiError> {
+  let detail = res.statusText || `HTTP ${res.status}`;
+  try {
+    const data = (await res.json()) as { detail?: unknown };
+    if (typeof data.detail === "string") detail = data.detail;
+  } catch {
+    /* body no JSON */
+  }
+  return new ApiError(res.status, detail, retryAfterDe(res));
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -39,16 +62,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
 
-  if (!res.ok) {
-    let detail = res.statusText || `HTTP ${res.status}`;
-    try {
-      const data = (await res.json()) as { detail?: unknown };
-      if (typeof data.detail === "string") detail = data.detail;
-    } catch {
-      /* body no JSON */
-    }
-    throw new ApiError(res.status, detail);
-  }
+  if (!res.ok) throw await errorDeRespuesta(res);
 
   return (await res.json()) as T;
 }
@@ -95,12 +109,31 @@ export type NasConfig = {
 };
 
 export type UploadResult = {
-  ok: boolean;
+  ok: true;
   /** Ruta relativa a la raíz del NAS, p. ej.
    *  "files/Entrada/Fotos/2026...-foto.jpg". */
   path: string;
   name: string;
   size: number;
+  /** Subcarpeta de Entrada/ donde se clasificó (Fotos, Videos, Audio…). */
+  folder?: string;
+};
+
+/** Un archivo que el lote rechazó; el resto del lote sigue su curso. */
+export type UploadFailure = {
+  ok: false;
+  name: string;
+  error: string;
+};
+
+export type UploadBatchItem = UploadResult | UploadFailure;
+
+export type UploadBatchResult = {
+  /** true solo si TODOS los archivos del lote se guardaron. */
+  ok: boolean;
+  results: UploadBatchItem[];
+  uploaded: number;
+  failed: number;
 };
 
 export type ChatStreamHandlers = {
@@ -305,17 +338,32 @@ export const api = {
       headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
       body: form,
     });
-    if (!res.ok) {
-      let detail = res.statusText || `HTTP ${res.status}`;
-      try {
-        const data = (await res.json()) as { detail?: unknown };
-        if (typeof data.detail === "string") detail = data.detail;
-      } catch {
-        /* body no JSON */
-      }
-      throw new ApiError(res.status, detail);
-    }
+    if (!res.ok) throw await errorDeRespuesta(res);
     return (await res.json()) as UploadResult;
+  },
+
+  /**
+   * Sube varios adjuntos en UNA petición (hasta 50 / 500 MB).
+   *
+   * El servidor responde 200 aunque algún archivo falle: cada uno trae su
+   * resultado. Un 429 significa que el lote entero no cupo en el límite por
+   * minuto (`retryAfter` dice cuánto esperar) y NO se escribió nada.
+   */
+  uploadBatch: async (
+    files: File[],
+    csrfToken: string | null,
+  ): Promise<UploadBatchResult> => {
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    const res = await fetch("/api/files/upload-batch", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+      body: form,
+    });
+    if (!res.ok) throw await errorDeRespuesta(res);
+    return (await res.json()) as UploadBatchResult;
   },
 
   /** Detiene el turno en curso. Idempotente: `stopped=false` si ya cerró. */

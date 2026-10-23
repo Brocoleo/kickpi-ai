@@ -2,11 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat } from "./Chat";
-import { ApiError, type ChatStreamHandlers } from "../api";
+import {
+  ApiError,
+  type ChatStreamHandlers,
+  type UploadBatchResult,
+  type UploadResult,
+} from "../api";
 
 /**
- * Adjuntos del chat: se suben a Entrada/ del NAS y las rutas viajan en el
- * mensaje para que el modelo no tenga que buscarlas a ciegas.
+ * Adjuntos del chat: se suben a Entrada/ del NAS en lotes y las rutas viajan
+ * en el mensaje para que el modelo no tenga que buscarlas a ciegas.
  */
 
 const apiMock = vi.hoisted(() => ({
@@ -17,6 +22,7 @@ const apiMock = vi.hoisted(() => ({
   stopChat: vi.fn(),
   deleteConversation: vi.fn(),
   uploadFile: vi.fn(),
+  uploadBatch: vi.fn(),
 }));
 
 vi.mock("../api", async () => {
@@ -27,6 +33,27 @@ vi.mock("../api", async () => {
     ApiError: actual.ApiError,
   };
 });
+
+/** Resultado de un archivo guardado (lo que devuelve el endpoint batch). */
+function guardado(nombre: string, carpeta = "Documentos"): UploadResult {
+  return {
+    ok: true,
+    path: `files/Entrada/${carpeta}/${nombre}`,
+    name: nombre,
+    size: 4,
+    folder: carpeta,
+  };
+}
+
+/** Lote completo en verde, en el orden en que se enviaron los archivos. */
+function loteOk(...items: UploadResult[]): UploadBatchResult {
+  return {
+    ok: true,
+    results: items,
+    uploaded: items.length,
+    failed: 0,
+  };
+}
 
 beforeEach(() => {
   localStorage.clear();
@@ -47,14 +74,10 @@ beforeEach(() => {
 });
 
 describe("Chat · adjuntos", () => {
-  it("sube el archivo y menciona la ruta en el mensaje", async () => {
-    const subido = {
-      ok: true,
-      path: "files/Entrada/Documentos/20261022-1200-abcd-factura.pdf",
-      name: "factura.pdf",
-      size: 4,
-    };
-    apiMock.uploadFile.mockResolvedValue(subido);
+  it("sube el archivo por lote y menciona la ruta en el mensaje", async () => {
+    apiMock.uploadBatch.mockImplementation((files: File[]) =>
+      Promise.resolve(loteOk(...files.map((f) => guardado(f.name)))),
+    );
     let enviado = "";
     apiMock.chatStream.mockImplementation(
       (mensaje: string, _conv: string | null, h: ChatStreamHandlers) => {
@@ -67,7 +90,9 @@ describe("Chat · adjuntos", () => {
     );
 
     const user = userEvent.setup();
-    const { container } = render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
+    const { container } = render(
+      <Chat onUnauthorized={() => {}} csrfToken="csrf-1" />,
+    );
     await screen.findByText("Hola.");
 
     const input = screen.getByLabelText("Archivos para adjuntar");
@@ -77,7 +102,7 @@ describe("Chat · adjuntos", () => {
     fireEvent.change(input, { target: { files: [archivo] } });
 
     await screen.findByText("factura.pdf");
-    expect(apiMock.uploadFile).toHaveBeenCalledWith(archivo, "csrf-1");
+    expect(apiMock.uploadBatch).toHaveBeenCalledWith([archivo], "csrf-1");
 
     // Con adjunto se puede enviar aunque no haya texto.
     const enviar = screen.getByLabelText("Enviar mensaje") as HTMLButtonElement;
@@ -88,7 +113,7 @@ describe("Chat · adjuntos", () => {
 
     await waitFor(() =>
       expect(enviado).toContain(
-        "Adjunto en la NAS: files/Entrada/Documentos/20261022-1200-abcd-factura.pdf",
+        "Adjunto en la NAS: files/Entrada/Documentos/factura.pdf",
       ),
     );
     expect(enviado).toContain("mira esto");
@@ -96,31 +121,13 @@ describe("Chat · adjuntos", () => {
     await waitFor(() => expect(container.querySelector(".attach-chip")).toBeNull());
   });
 
-  it("sube varios archivos y menciona cada ruta", async () => {
-    const subidos = [
-      {
-        ok: true,
-        path: "files/Entrada/Fotos/a.jpg",
-        name: "a.jpg",
-        size: 10,
-      },
-      {
-        ok: true,
-        path: "files/Entrada/Videos/b.mov",
-        name: "b.mov",
-        size: 20,
-      },
-      {
-        ok: true,
-        path: "files/Entrada/Audio/c.mp3",
-        name: "c.mp3",
-        size: 30,
-      },
+  it("manda los archivos de un lote en UNA sola petición", async () => {
+    const rutas = [
+      guardado("a.jpg", "Fotos"),
+      guardado("b.mov", "Videos"),
+      guardado("c.mp3", "Audio"),
     ];
-    apiMock.uploadFile
-      .mockResolvedValueOnce(subidos[0])
-      .mockResolvedValueOnce(subidos[1])
-      .mockResolvedValueOnce(subidos[2]);
+    apiMock.uploadBatch.mockResolvedValue(loteOk(...rutas));
     let enviado = "";
     apiMock.chatStream.mockImplementation(
       (mensaje: string, _conv: string | null, h: ChatStreamHandlers) => {
@@ -134,8 +141,8 @@ describe("Chat · adjuntos", () => {
     render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
     await screen.findByText("Hola.");
 
-    const archivos = subidos.map(
-      (s) => new File([s.name], s.name, { type: "application/octet-stream" }),
+    const archivos = rutas.map(
+      (r) => new File(["x"], r.name, { type: "application/octet-stream" }),
     );
     fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
       target: { files: archivos },
@@ -144,30 +151,101 @@ describe("Chat · adjuntos", () => {
     await screen.findByText("a.jpg");
     await screen.findByText("b.mov");
     await screen.findByText("c.mp3");
-    await waitFor(() =>
-      expect(apiMock.uploadFile).toHaveBeenCalledTimes(3),
-    );
+    // Un solo request para los tres (BATCH_SIZE = 10).
+    await waitFor(() => expect(apiMock.uploadBatch).toHaveBeenCalledTimes(1));
+    expect(apiMock.uploadBatch.mock.calls[0][0]).toHaveLength(3);
+    expect(apiMock.uploadFile).not.toHaveBeenCalled();
 
     const enviar = screen.getByLabelText("Enviar mensaje") as HTMLButtonElement;
     await waitFor(() => expect(enviar.disabled).toBe(false));
     await user.click(enviar);
 
     await waitFor(() => {
-      for (const subido of subidos) {
-        expect(enviado).toContain(`Adjunto en la NAS: ${subido.path}`);
+      for (const r of rutas) {
+        expect(enviado).toContain(`Adjunto en la NAS: ${r.path}`);
       }
     });
   });
 
-  it("si uno falla, los demás se envían y el fallido se queda marcado", async () => {
-    apiMock.uploadFile
-      .mockResolvedValueOnce({
-        ok: true,
-        path: "files/Entrada/Documentos/bien.txt",
-        name: "bien.txt",
-        size: 3,
-      })
-      .mockRejectedValueOnce(new ApiError(415, "Extensión no permitida"));
+  it("100 archivos se mandan en 10 lotes de 10", async () => {
+    apiMock.uploadBatch.mockImplementation((files: File[]) =>
+      Promise.resolve(loteOk(...files.map((f) => guardado(f.name)))),
+    );
+
+    render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
+    await screen.findByText("Hola.");
+
+    const archivos = Array.from(
+      { length: 100 },
+      (_, i) => new File(["x"], `f${i}.txt`, { type: "text/plain" }),
+    );
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: { files: archivos },
+    });
+
+    await waitFor(
+      () => expect(apiMock.uploadBatch).toHaveBeenCalledTimes(10),
+      { timeout: 20_000 },
+    );
+    for (const llamada of apiMock.uploadBatch.mock.calls) {
+      expect(llamada[0]).toHaveLength(10);
+    }
+    // Sin aviso de tope: 100 es exactamente el máximo permitido.
+    expect(screen.queryByText(/Máximo 100 archivos por mensaje/)).toBeNull();
+  });
+
+  it("muestra el lote en curso y avanza la barra", async () => {
+    // Cada lote queda pendiente hasta que la prueba lo resuelve: así se puede
+    // observar el estado intermedio (lote 1 de 2, 0 de 15).
+    const pendientes: Array<() => void> = [];
+    apiMock.uploadBatch.mockImplementation(
+      (files: File[]) =>
+        new Promise<UploadBatchResult>((resolve) => {
+          pendientes.push(() =>
+            resolve(loteOk(...files.map((f) => guardado(f.name)))),
+          );
+        }),
+    );
+
+    const { container } = render(
+      <Chat onUnauthorized={() => {}} csrfToken="csrf-1" />,
+    );
+    await screen.findByText("Hola.");
+
+    const archivos = Array.from(
+      { length: 15 },
+      (_, i) => new File(["x"], `f${i}.txt`, { type: "text/plain" }),
+    );
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: { files: archivos },
+    });
+
+    await waitFor(() => expect(pendientes).toHaveLength(1));
+    const progreso = container.querySelector(".attach-progress");
+    expect(progreso?.textContent).toContain("Lote 1 de 2");
+
+    pendientes[0]();
+    await waitFor(() => expect(pendientes).toHaveLength(2));
+    expect(container.querySelector(".attach-progress")?.textContent).toContain(
+      "Lote 2 de 2 · 10/15",
+    );
+
+    pendientes[1]();
+    await waitFor(() =>
+      expect(container.querySelector(".attach-progress")).toBeNull(),
+    );
+  });
+
+  it("si un archivo del lote falla, los demás se envían y el fallido se queda marcado", async () => {
+    apiMock.uploadBatch.mockResolvedValue({
+      ok: false,
+      results: [
+        guardado("bien.txt"),
+        { ok: false, name: "malo.exe", error: "Extensión no permitida" },
+      ],
+      uploaded: 1,
+      failed: 1,
+    });
     let enviado = "";
     apiMock.chatStream.mockImplementation(
       (mensaje: string, _conv: string | null, h: ChatStreamHandlers) => {
@@ -205,23 +283,46 @@ describe("Chat · adjuntos", () => {
     expect(screen.getByText("malo.exe")).toBeTruthy();
   });
 
-  it("muestra el error del servidor y deja el chip marcado", async () => {
-    apiMock.uploadFile.mockRejectedValue(
+  it("un error del lote deja los chips pendientes marcados", async () => {
+    apiMock.uploadBatch.mockRejectedValue(
       new ApiError(413, "El archivo supera el límite de 50 MB"),
     );
 
     render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
     await screen.findByText("Hola.");
 
-    const input = screen.getByLabelText("Archivos para adjuntar");
-    fireEvent.change(input, {
-      target: { files: [new File(["x"], "grande.bin")] },
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: {
+        files: [new File(["x"], "grande.bin")],
+      },
     });
 
     expect(
       await screen.findByText(/El archivo supera el límite de 50 MB/),
     ).toBeTruthy();
     expect(screen.getByText("grande.bin")).toBeTruthy();
+  });
+
+  it("reintenta el lote cuando el servidor pide esperar (429)", async () => {
+    apiMock.uploadBatch
+      .mockRejectedValueOnce(new ApiError(429, "Demasiadas subidas", 0.01))
+      .mockResolvedValueOnce(loteOk(guardado("reintento.txt")));
+
+    render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
+    await screen.findByText("Hola.");
+
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: { files: [new File(["x"], "reintento.txt", { type: "text/plain" })] },
+    });
+
+    await waitFor(() => expect(apiMock.uploadBatch).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Enviar mensaje")).toHaveProperty(
+        "disabled",
+        false,
+      ),
+    );
+    expect(screen.queryByText(/Demasiadas subidas/)).toBeNull();
   });
 
   it("rechaza adjuntos de más de 50 MB sin llamar al servidor", async () => {
@@ -235,7 +336,7 @@ describe("Chat · adjuntos", () => {
     });
 
     expect(await screen.findByText("Máximo 50 MB por archivo")).toBeTruthy();
-    expect(apiMock.uploadFile).not.toHaveBeenCalled();
+    expect(apiMock.uploadBatch).not.toHaveBeenCalled();
   });
 
   it("usa el límite configurado en Ajustes → NAS", async () => {
@@ -243,9 +344,7 @@ describe("Chat · adjuntos", () => {
     render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
     await screen.findByText("Hola.");
     // Deja resolver la consulta de configuración antes de elegir el archivo.
-    await waitFor(() =>
-      expect(apiMock.nasConfig).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(apiMock.nasConfig).toHaveBeenCalled());
 
     const grande = new File(["x"], "seis.bin");
     Object.defineProperty(grande, "size", { value: 6 * 1024 * 1024 });
@@ -253,27 +352,82 @@ describe("Chat · adjuntos", () => {
       target: { files: [grande] },
     });
 
-    expect(
-      await screen.findByText("Máximo 5 MB por archivo"),
-    ).toBeTruthy();
-    expect(apiMock.uploadFile).not.toHaveBeenCalled();
+    expect(await screen.findByText("Máximo 5 MB por archivo")).toBeTruthy();
+    expect(apiMock.uploadBatch).not.toHaveBeenCalled();
   });
 
-  it("limita a 10 archivos por mensaje", async () => {
-    apiMock.uploadFile.mockImplementation((file: File) =>
-      Promise.resolve({
-        ok: true,
-        path: `files/Entrada/Documentos/${file.name}`,
-        name: file.name,
-        size: file.size,
-      }),
+  it("ajusta el tamaño del lote al límite por minuto configurado", async () => {
+    // Con 4 subidas/minuto, mandar 10 de golpe daría 413 («no cabe»).
+    apiMock.nasConfig.mockResolvedValue({
+      inbox: "files/Entrada",
+      inbox_dir: "/mnt/data/nas/files/Entrada",
+      upload_max_mb: 50,
+      upload_rate_per_min: 4,
+      classifier_rules: null,
+    });
+    apiMock.uploadBatch.mockImplementation((files: File[]) =>
+      Promise.resolve(loteOk(...files.map((f) => guardado(f.name)))),
+    );
+
+    render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
+    await screen.findByText("Hola.");
+    await waitFor(() => expect(apiMock.nasConfig).toHaveBeenCalled());
+
+    const archivos = Array.from(
+      { length: 12 },
+      (_, i) => new File(["x"], `f${i}.txt`, { type: "text/plain" }),
+    );
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: { files: archivos },
+    });
+
+    await waitFor(() => expect(apiMock.uploadBatch).toHaveBeenCalledTimes(3));
+    for (const llamada of apiMock.uploadBatch.mock.calls) {
+      expect(llamada[0]).toHaveLength(4);
+    }
+  });
+
+  it("no manda lotes de más de 450 MB (aunque quepan 10 archivos)", async () => {
+    apiMock.nasConfig.mockResolvedValue({
+      inbox: "files/Entrada",
+      inbox_dir: "/mnt/data/nas/files/Entrada",
+      upload_max_mb: 500,
+      upload_rate_per_min: 60,
+      classifier_rules: null,
+    });
+    apiMock.uploadBatch.mockImplementation((files: File[]) =>
+      Promise.resolve(loteOk(...files.map((f) => guardado(f.name)))),
+    );
+
+    render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
+    await screen.findByText("Hola.");
+    await waitFor(() => expect(apiMock.nasConfig).toHaveBeenCalled());
+
+    const archivos = [0, 1, 2].map((i) => {
+      const file = new File(["x"], `video${i}.mp4`, { type: "video/mp4" });
+      Object.defineProperty(file, "size", { value: 300 * 1024 * 1024 });
+      return file;
+    });
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: { files: archivos },
+    });
+
+    await waitFor(() => expect(apiMock.uploadBatch).toHaveBeenCalledTimes(3));
+    for (const llamada of apiMock.uploadBatch.mock.calls) {
+      expect(llamada[0]).toHaveLength(1);
+    }
+  });
+
+  it("limita a 100 archivos por mensaje", async () => {
+    apiMock.uploadBatch.mockImplementation((files: File[]) =>
+      Promise.resolve(loteOk(...files.map((f) => guardado(f.name)))),
     );
 
     render(<Chat onUnauthorized={() => {}} csrfToken="csrf-1" />);
     await screen.findByText("Hola.");
 
     const archivos = Array.from(
-      { length: 11 },
+      { length: 101 },
       (_, i) => new File(["x"], `f${i}.txt`, { type: "text/plain" }),
     );
     fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
@@ -281,8 +435,13 @@ describe("Chat · adjuntos", () => {
     });
 
     expect(
-      await screen.findByText("Máximo 10 archivos por mensaje"),
+      await screen.findByText("Máximo 100 archivos por mensaje"),
     ).toBeTruthy();
-    await waitFor(() => expect(apiMock.uploadFile).toHaveBeenCalledTimes(10));
+    await waitFor(
+      () => expect(apiMock.uploadBatch).toHaveBeenCalledTimes(10),
+      { timeout: 20_000 },
+    );
+    const enviados = apiMock.uploadBatch.mock.calls.flatMap((c) => c[0]);
+    expect(enviados).toHaveLength(100);
   });
 });

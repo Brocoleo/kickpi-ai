@@ -1205,6 +1205,32 @@ code {
   overflow-y: auto;
 }
 
+.attach-progress {
+  display: flex;
+  flex-basis: 100%;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 2px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.attach-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(94, 234, 212, 0.14);
+}
+
+.attach-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
 .nas-config {
   display: flex;
   flex-direction: column;
@@ -1257,8 +1283,13 @@ code {
   flex-basis: auto;
 }
 
-.attach-chip.subiendo {
+.attach-chip.subiendo,
+.attach-chip.cola {
   opacity: 0.72;
+}
+
+.attach-chip.cola {
+  border-style: dashed;
 }
 
 .attach-chip.error {
@@ -1323,6 +1354,10 @@ code {
 
 .attach-remove:hover {
   color: var(--danger);
+}
+
+.attach-remove:disabled {
+  opacity: 0.35;
 }
 
 .attach-error {
