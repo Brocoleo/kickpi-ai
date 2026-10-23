@@ -81,6 +81,7 @@ def list_ops() -> dict:
             "GET /nas/status",
             "GET /nas/list",
             "GET /nas/file",
+            "POST /nas/refresh",
         ],
         "denied": [
             "start/stop/restart de contenedores",
@@ -195,6 +196,18 @@ def nas_file(
             "Cache-Control": "private, max-age=60",
         },
     )
+
+
+@app.post("/nas/refresh", tags=["nas"], dependencies=[Depends(require_token)])
+def nas_refresh(
+    subruta: str = Query(default="", max_length=500, description="Subcarpeta a refrescar (vacío = todo)"),
+) -> dict:
+    """Invalida y re-escanea una parte del índice (o todo).
+
+    Si `subruta` está vacío, reindexa toda la NAS.
+    Si es "files/Entrada", solo refresca esa carpeta (útil tras subir adjuntos).
+    """
+    return _INDEX.refresh(subruta)
 
 
 @app.on_event("startup")

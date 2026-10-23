@@ -173,3 +173,62 @@ def test_cache_sobrevive_a_otra_instancia(tmp_path) -> None:
     assert estado["cache_loaded"] is True
     assert estado["files"] == total
     assert segundo.buscar("orange", contenido=False)["results"]
+
+
+def test_refresh_parcial_invalida_y_reescanea(tmp_path) -> None:
+    """Refresh parcial elimina entradas obsoletas y agrega nuevas de la subruta."""
+    raiz = tmp_path / "nas"
+    entrada = raiz / "files" / "Entrada"
+    entrada.mkdir(parents=True)
+    (entrada / "original.txt").write_text("contenido original")
+
+    cache = tmp_path / "cache" / "nas.json"
+    indice = _indice(raiz, cache_path=cache)
+    # Índice inicial: 1 archivo
+    assert indice.estado()["files"] == 1
+    assert any(e.ruta == "files/Entrada/original.txt" for e in indice._entradas)
+
+    # Añadir archivo nuevo (simula subida)
+    (entrada / "nuevo.txt").write_text("nuevo contenido")
+
+    # Refresh parcial de la carpeta Entrada
+    result = indice.refresh("files/Entrada")
+    assert result["ok"] is True
+    assert result["scope"] == "partial"
+    assert result["removed"] == 1  # original.txt eliminado del índice
+    assert result["added"] == 2   # original.txt + nuevo.txt re-escaneados
+
+    # Verificar que ambos están en el índice
+    rutas = {e.ruta for e in indice._entradas}
+    assert "files/Entrada/original.txt" in rutas
+    assert "files/Entrada/nuevo.txt" in rutas
+    assert indice.estado()["files"] == 2
+
+    # El caché se actualizó
+    assert cache.is_file()
+
+
+def test_refresh_total_reconstruye_todo(tmp_path) -> None:
+    """Refresh sin subruta vacía reindexa toda la NAS."""
+    raiz = tmp_path / "nas"
+    raiz.mkdir(parents=True)
+    (raiz / "a.txt").write_text("a")
+    (raiz / "b.txt").write_text("b")
+
+    cache = tmp_path / "cache" / "nas.json"
+    indice = _indice(raiz, cache_path=cache)
+    assert indice.estado()["files"] == 2
+
+    # Borrar y añadir diferente
+    (raiz / "a.txt").unlink()
+    (raiz / "c.txt").write_text("c")
+
+    result = indice.refresh("")  # refresco total
+    assert result["ok"] is True
+    assert result["scope"] == "full"
+    # El índice se vacía y se reconstruye en background; estado inmediato puede ser 0
+    # pero asegurar() espera a que haya algo
+    assert indice.asegurar(5.0) is True
+    assert indice.estado()["files"] == 2
+    assert not any(e.ruta == "a.txt" for e in indice._entradas)
+    assert any(e.ruta == "c.txt" for e in indice._entradas)

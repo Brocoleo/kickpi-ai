@@ -101,7 +101,7 @@ class IndiceNAS:
         self.max_files = max_files
         self.refresh_s = refresh_s
         self.cache_path = Path(cache_path) if cache_path else None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._entradas: list[Entrada] = []
         self._construido_en = 0.0
         self._construyendo = False
@@ -512,6 +512,107 @@ class IndiceNAS:
         if not resuelto.is_file():
             raise FileNotFoundError(rel)
         return resuelto
+
+    def refresh(self, subruta: str = "") -> dict:
+        """Invalida una parte del índice (o todo) y fuerza re-escaneo.
+
+        Si `subruta` está vacía, invalida el índice completo.
+        Si es un path relativo (ej. "files/Entrada"), solo marca como
+        obsoleto lo que cuelga de ahí y vuelve a recorrer esa rama.
+        """
+        try:
+            rel = self._normalizar_ruta(subruta)
+        except ValueError:
+            return {"ok": False, "error": "subruta no válida"}
+
+        base = (self.raiz / rel) if rel else self.raiz
+        if not self._dentro_de_raiz(base):
+            return {"ok": False, "error": "subruta fuera de la NAS"}
+
+        with self._lock:
+            # Si es invalidación total, vaciar y lanzar reconstrucción completa.
+            if not rel:
+                self._entradas = []
+                self._construido_en = 0.0
+                self._truncado = False
+                self._error = None
+                self._cache_leido = False
+                if not self._construyendo:
+                    self._construyendo = True
+                    threading.Thread(
+                        target=self._construir, name="nas-index-full", daemon=True
+                    ).start()
+                return {"ok": True, "scope": "full", "message": "reindexación completa iniciada"}
+
+            # Invalidación parcial: filtrar entradas que NO están bajo la subruta
+            prefijo = rel.rstrip("/") + "/"
+            antes = len(self._entradas)
+            self._entradas = [
+                e for e in self._entradas if not normalizar(e.ruta).startswith(normalizar(prefijo))
+            ]
+            eliminadas = antes - len(self._entradas)
+
+        # Recorrer solo la subruta y fusionar
+        entradas_nuevas, truncado, error = self._recorrer_subruta(base, rel)
+        with self._lock:
+            self._entradas.extend(entradas_nuevas)
+            self._entradas.sort(key=lambda e: e.mtime, reverse=True)
+            self._truncado = truncado
+            self._error = error
+            self._construido_en = time.time()
+            if error is None and (entradas_nuevas or eliminadas > 0):
+                self._guardar_cache()
+
+        return {
+            "ok": True,
+            "scope": "partial",
+            "path": rel,
+            "removed": eliminadas,
+            "added": len(entradas_nuevas),
+            "error": error,
+        }
+
+    def _recorrer_subruta(self, base: Path, rel: str) -> tuple[list[Entrada], bool, str | None]:
+        """Recorre solo una subruta (para refresh parcial)."""
+        entradas: list[Entrada] = []
+        truncado = False
+        error: str | None = None
+
+        if not base.is_dir():
+            return entradas, False, f"la subruta no existe o no es un directorio: {base}"
+
+        pendientes = [base]
+        while pendientes and len(entradas) < self.max_files:
+            actual = pendientes.pop()
+            try:
+                iterator = os.scandir(actual)
+            except OSError:
+                continue
+            with iterator:
+                for item in iterator:
+                    try:
+                        if item.is_dir(follow_symlinks=False):
+                            nombre = item.name
+                            if nombre.startswith(".") or nombre.lower() in _SKIP_DIRS:
+                                continue
+                            pendientes.append(Path(item.path))
+                        elif item.is_file(follow_symlinks=False):
+                            stat = item.stat(follow_symlinks=False)
+                            rel_item = os.path.relpath(item.path, self.raiz).replace(os.sep, "/")
+                            entradas.append(
+                                Entrada(
+                                    ruta=rel_item,
+                                    nombre=item.name,
+                                    tamano=stat.st_size,
+                                    mtime=stat.st_mtime,
+                                )
+                            )
+                    except OSError:
+                        continue
+
+        truncado = len(entradas) >= self.max_files
+        entradas.sort(key=lambda e: e.mtime, reverse=True)
+        return entradas, truncado, error
 
     def estado(self) -> dict:
         listo = self.asegurar(0.0)
