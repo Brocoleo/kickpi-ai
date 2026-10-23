@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS approval_context (
     tool_call_id    TEXT,
     created_at      TEXT NOT NULL
 );
+
+-- Ajustes editables en caliente desde la pestaña Ajustes de la PWA.
+-- Los valores de entorno son el punto de partida; lo guardado aquí manda.
+CREATE TABLE IF NOT EXISTS app_config (
+    clave      TEXT PRIMARY KEY,
+    valor      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

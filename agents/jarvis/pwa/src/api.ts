@@ -83,6 +83,17 @@ export type ChatStreamDone = {
   interrupted?: boolean;
 };
 
+export type NasConfig = {
+  /** Ruta del inbox relativa a la raíz del NAS (solo lectura). */
+  inbox: string;
+  /** Ruta absoluta en el host (solo lectura). */
+  inbox_dir: string;
+  upload_max_mb: number;
+  upload_rate_per_min: number;
+  /** Reglas de clasificación vigentes; null = las de fábrica. */
+  classifier_rules: Record<string, unknown> | null;
+};
+
 export type UploadResult = {
   ok: boolean;
   /** Ruta relativa a la raíz del NAS, p. ej.
@@ -341,6 +352,24 @@ export const api = {
     }`,
 
   /** Borra un adjunto de Entrada/ (sesión humana + CSRF). */
+  /** Ajustes del NAS (sesión de navegador; no acepta el token de API). */
+  nasConfig: () => request<NasConfig>("/admin/nas"),
+
+  updateNasConfig: (
+    cambios: {
+      upload_max_mb?: number;
+      upload_rate_per_min?: number;
+      /** JSON en texto; "" restaura las reglas de fábrica. */
+      classifier_rules?: string;
+    },
+    csrfToken: string | null,
+  ) =>
+    request<NasConfig>("/admin/nas", {
+      method: "PATCH",
+      body: JSON.stringify(cambios),
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+    }),
+
   deleteNasFile: (path: string, csrfToken: string | null) =>
     request<{ ok: boolean; path: string }>(
       `/files?path=${encodeURIComponent(path)}`,

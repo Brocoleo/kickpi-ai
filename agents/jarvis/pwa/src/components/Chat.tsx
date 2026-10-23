@@ -277,6 +277,20 @@ function nombreArchivo(extension: string): string {
   return `jarvis-${marca}.${extension}`;
 }
 
+/** Archivo elegido por el usuario y su estado de subida (chips del compositor). */
+type AdjuntoPendiente = {
+  id: string;
+  file: File;
+  estado: "subiendo" | "listo" | "error";
+  resultado?: UploadResult;
+  error?: string;
+};
+
+const MAX_ADJUNTOS = 10;
+/** Respaldo si la config del NAS aún no llegó. */
+const MAX_ADJUNTOS_MB = 50;
+const SUBIDAS_EN_PARALELO = 3;
+
 // `scrollTo` no existe en todos los entornos (jsdom, navegadores viejos):
 // sin la alternativa, el efecto rompería al pintar el historial.
 function alFinal(el: HTMLElement, suave = true): void {
@@ -313,12 +327,17 @@ export function Chat({
   // Herramienta ejecutándose AHORA (evento tool_start): se muestra en vivo
   // dentro de la burbuja, no como un paso ya terminado.
   const [liveTool, setLiveTool] = useState<string | null>(null);
-  // Adjunto del chat: ya subido a Entrada/ del NAS. Se menciona la ruta en el
-  // mensaje para que el modelo pueda buscarlo con nas_search.
-  const [attachment, setAttachment] = useState<UploadResult | null>(null);
-  const [uploading, setUploading] = useState(false);
+  // Adjuntos del chat: ya subidos a Entrada/ del NAS. Se mencionan sus rutas
+  // en el mensaje para que el modelo no tenga que buscarlos a ciegas.
+  const [adjuntos, setAdjuntos] = useState<AdjuntoPendiente[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Límite real por archivo: lo fija Ajustes → NAS (la subida lo revalida).
+  const [limiteMb, setLimiteMb] = useState(MAX_ADJUNTOS_MB);
+  const subiendo = adjuntos.some((a) => a.estado === "subiendo");
+  const adjuntosListos = adjuntos.filter(
+    (a) => a.estado === "listo" && a.resultado,
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -379,6 +398,17 @@ export function Chat({
     },
     [onUnauthorized],
   );
+
+  // El límite por archivo puede haberse subido desde Ajustes → NAS. Si la
+  // consulta falla, se conserva el respaldo local (50 MB).
+  useEffect(() => {
+    api
+      .nasConfig()
+      .then((config) => setLimiteMb(config.upload_max_mb))
+      .catch(() => {
+        /* sin drama: la subida revalida en el servidor */
+      });
+  }, []);
 
   // Restaura la conversacion: primero la ultima usada; si no hay id (iOS
   // reinicio la PWA), la mas reciente del servidor.
@@ -486,16 +516,20 @@ export function Chat({
   }
 
   async function send(text?: string) {
-    const notaAdjunto = attachment
-      ? `\n\n📎 Adjunto en la NAS: ${attachment.path}`
+    const notaAdjunto = adjuntosListos.length
+      ? "\n\n" +
+        adjuntosListos
+          .map((a) => `📎 Adjunto en la NAS: ${a.resultado!.path}`)
+          .join("\n")
       : "";
     const content = (text ?? `${input}${notaAdjunto}`).trim();
-    if (!content || sending || uploading) return;
+    if (!content || sending || subiendo) return;
 
     historial.current = [...historial.current, content].slice(-50);
     setIndiceHistorial(-1);
     setInput("");
-    setAttachment(null);
+    // Los chips fallidos se quedan para reintentarlos; los listos ya viajaron.
+    setAdjuntos((prev) => prev.filter((a) => a.estado === "error"));
     setUploadError(null);
     setAwaitingReply(false);
     pegadoAbajo.current = true;
@@ -707,26 +741,76 @@ export function Chat({
    * el texto parcial y la conversación queda coherente). Si aún no hay id de
    * conversación —no debería, llega en `meta`— se corta la conexión.
    */
+  function quitarAdjunto(id: string): void {
+    setAdjuntos((prev) => prev.filter((a) => a.id !== id));
+  }
+
+  /**
+   * Sube los archivos elegidos con un máximo de 3 en vuelo.
+   *
+   * El endpoint ya limita por IP (60/min): paralelizar de más solo provoca
+   * 429 y chips en error. Cada archivo se resuelve por separado; si uno
+   * falla, los demás siguen y el fallido se puede quitar sin perder el resto.
+   */
   async function attachFile(event: ChangeEvent<HTMLInputElement>): Promise<void> {
-    const file = event.target.files?.[0];
+    const elegidos = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
-    if (file.size > 50 * 1024 * 1024) {
-      setUploadError("Máximo 50 MB por archivo");
-      return;
-    }
+    if (!elegidos.length) return;
+
     setUploadError(null);
-    setUploading(true);
-    try {
-      setAttachment(await api.uploadFile(file, csrfToken));
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) onUnauthorized();
-      setUploadError(
-        err instanceof Error ? err.message : "No se pudo subir el archivo",
-      );
-    } finally {
-      setUploading(false);
+    const nuevos: AdjuntoPendiente[] = [];
+    let grandes = 0;
+    let sobrantes = 0;
+    for (const file of elegidos) {
+      if (file.size > limiteMb * 1024 * 1024) {
+        grandes += 1;
+        continue;
+      }
+      if (adjuntos.length + nuevos.length >= MAX_ADJUNTOS) {
+        sobrantes += 1;
+        continue;
+      }
+      nuevos.push({ id: uid(), file, estado: "subiendo" });
     }
+    const avisos: string[] = [];
+    if (grandes) avisos.push(`Máximo ${limiteMb} MB por archivo`);
+    if (sobrantes) avisos.push(`Máximo ${MAX_ADJUNTOS} archivos por mensaje`);
+    if (avisos.length) setUploadError(avisos.join(" · "));
+    if (!nuevos.length) return;
+    setAdjuntos((prev) => [...prev, ...nuevos]);
+
+    let siguiente = 0;
+    const trabajador = async (): Promise<void> => {
+      while (siguiente < nuevos.length) {
+        const actual = nuevos[siguiente];
+        siguiente += 1;
+        try {
+          const resultado = await api.uploadFile(actual.file, csrfToken);
+          setAdjuntos((prev) =>
+            prev.map((a) =>
+              a.id === actual.id ? { ...a, estado: "listo", resultado } : a,
+            ),
+          );
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) onUnauthorized();
+          const mensaje =
+            err instanceof Error ? err.message : "No se pudo subir el archivo";
+          setAdjuntos((prev) =>
+            prev.map((a) =>
+              a.id === actual.id
+                ? { ...a, estado: "error", error: mensaje }
+                : a,
+            ),
+          );
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(SUBIDAS_EN_PARALELO, nuevos.length) },
+        trabajador,
+      ),
+    );
   }
 
   async function stopTurn(): Promise<void> {
@@ -756,7 +840,7 @@ export function Chat({
     setConversationId(null);
     setAwaitingReply(false);
     setLiveTool(null);
-    setAttachment(null);
+    setAdjuntos([]);
     setUploadError(null);
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(STORAGE_KEY);
@@ -1200,41 +1284,64 @@ export function Chat({
           void send();
         }}
       >
-        {attachment && (
-          <div className="attach-chip">
-            <PaperclipIcon />
-            <span className="attach-name" title={attachment.path}>
-              {attachment.name}
-            </span>
-            <span className="attach-where">{peso(attachment.size)}</span>
-            <button
-              type="button"
-              className="attach-remove"
-              aria-label="Quitar adjunto"
-              onClick={() => setAttachment(null)}
-              disabled={sending}
-            >
-              <XIcon />
-            </button>
+        {adjuntos.length > 0 && (
+          <div className="attach-list" aria-live="polite">
+            {adjuntos.map((a) => (
+              <div key={a.id} className={`attach-chip ${a.estado}`}>
+                {a.estado === "subiendo" ? (
+                  <RefreshIcon className="spin-icon" />
+                ) : (
+                  <PaperclipIcon />
+                )}
+                <span
+                  className="attach-name"
+                  title={a.resultado?.path ?? a.file.name}
+                >
+                  {a.file.name}
+                </span>
+                <span className="attach-where">
+                  {a.estado === "error"
+                    ? "Error"
+                    : peso(a.resultado?.size ?? a.file.size)}
+                </span>
+                <button
+                  type="button"
+                  className="attach-remove"
+                  aria-label={`Quitar ${a.file.name}`}
+                  onClick={() => quitarAdjunto(a.id)}
+                  disabled={sending}
+                >
+                  <XIcon />
+                </button>
+              </div>
+            ))}
           </div>
         )}
+        {adjuntos
+          .filter((a) => a.estado === "error")
+          .map((a) => (
+            <div key={`error-${a.id}`} className="attach-error">
+              {a.file.name}: {a.error}
+            </div>
+          ))}
         {uploadError && <div className="attach-error">{uploadError}</div>}
         <input
           ref={fileRef}
           className="attach-input"
           type="file"
-          aria-label="Archivo para adjuntar"
+          multiple
+          aria-label="Archivos para adjuntar"
           onChange={(event) => void attachFile(event)}
-          disabled={sending || uploading}
+          disabled={sending}
         />
         <button
           type="button"
           className="icon-btn attach-btn"
-          aria-label="Adjuntar archivo"
+          aria-label="Adjuntar archivos"
           onClick={() => fileRef.current?.click()}
-          disabled={sending || uploading}
+          disabled={sending}
         >
-          {uploading ? <RefreshIcon className="spin-icon" /> : <PaperclipIcon />}
+          {subiendo ? <RefreshIcon className="spin-icon" /> : <PaperclipIcon />}
         </button>
         <textarea
           ref={textareaRef}
@@ -1276,7 +1383,9 @@ export function Chat({
           <button
             className="send-btn"
             type="submit"
-            disabled={(!input.trim() && !attachment) || uploading}
+            disabled={
+              (!input.trim() && adjuntosListos.length === 0) || subiendo
+            }
             aria-label="Enviar mensaje"
           >
             <SendIcon />

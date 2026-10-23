@@ -15,6 +15,7 @@ import type { StoredMessage } from "../types";
  */
 
 const apiMock = vi.hoisted(() => ({
+  nasConfig: vi.fn(),
   conversations: vi.fn(),
   conversation: vi.fn(),
   chatStream: vi.fn(),
@@ -44,6 +45,8 @@ function fila(overrides: Partial<StoredMessage>): StoredMessage {
 describe("Chat · historial restaurado", () => {
   beforeEach(() => {
     localStorage.clear();
+    apiMock.nasConfig.mockReset();
+    apiMock.nasConfig.mockResolvedValue({ upload_max_mb: 50 });
     apiMock.conversations.mockReset();
     apiMock.conversation.mockReset();
   });

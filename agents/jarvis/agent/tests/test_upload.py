@@ -2,14 +2,13 @@
 
 Lo que se protege aquí:
 - el archivo cae dentro de la carpeta de entrada y no en otra ruta,
-- se clasifica en Fotos/Videos/Documentos según el tipo,
+- se clasifica en Fotos/Videos/Audio/Documentos según el tipo,
 - un nombre con `../` no escapa,
 - se exige sesión humana + CSRF (el token de API no sube archivos),
 - el límite de tamaño se aplica ANTES de dejar basura.
 """
 from __future__ import annotations
 
-import types
 from pathlib import Path
 
 import httpx
@@ -73,9 +72,11 @@ def test_sube_un_adjunto_a_entrada(browser, tmp_path) -> None:
         ("clip.MOV", "video/quicktime", "Videos"),
         ("informe.pdf", "application/pdf", "Documentos"),
         ("nota.txt", "text/plain", "Documentos"),
-        ("voz.m4a", "audio/mp4", "Documentos"),
+        ("voz.m4a", "audio/mp4", "Audio"),
+        ("grabacion.mp3", "application/octet-stream", "Audio"),
         # Sin extensión conocida: manda el content_type como respaldo.
         ("adjunto-sin-extension", "image/png", "Fotos"),
+        ("nota-de-voz", "audio/ogg", "Audio"),
     ],
 )
 def test_clasifica_adjuntos_por_tipo(browser, tmp_path, nombre, mime, carpeta) -> None:
@@ -123,19 +124,8 @@ def test_exige_csrf(browser) -> None:
 
 
 def test_limite_de_tamano_no_deja_restos(browser, tmp_path, monkeypatch) -> None:
-    real = get_settings()
-    monkeypatch.setattr(
-        main,
-        "get_settings",
-        lambda: types.SimpleNamespace(
-            nas_inbox_dir=real.nas_inbox_dir,
-            nas_inbox_rel=real.nas_inbox_rel,
-            upload_max_mb=0,  # cualquier byte supera el límite
-            upload_rate_per_min=real.upload_rate_per_min,
-            nas_inbox_uid=real.nas_inbox_uid,
-            nas_inbox_gid=real.nas_inbox_gid,
-        ),
-    )
+    # El límite sale de la configuración en caliente (BD), no de get_settings.
+    monkeypatch.setattr(main.config_store, "ajustes_subida", lambda: (0, 0, None))
     respuesta = browser.post(
         "/api/files/upload",
         files={"file": ("grande.bin", b"1234567890", "application/octet-stream")},

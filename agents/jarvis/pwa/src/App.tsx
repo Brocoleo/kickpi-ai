@@ -192,7 +192,12 @@ export default function App() {
           />
         )}
         {tab === "settings" && (
-          <Settings me={me} onLogout={handleLogout} onUnauthorized={handleUnauthorized} />
+          <Settings
+            me={me}
+            csrfToken={csrfToken}
+            onLogout={handleLogout}
+            onUnauthorized={handleUnauthorized}
+          />
         )}
       </main>
 

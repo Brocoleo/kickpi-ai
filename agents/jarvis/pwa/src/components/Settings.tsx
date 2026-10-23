@@ -1,21 +1,42 @@
 import { useEffect, useState } from "react";
-import { ApiError, api } from "../api";
+import { ApiError, api, type NasConfig } from "../api";
 import { shortModel } from "../lib/format";
 import type { AuthMe, Health, LlmStatus } from "../types";
 import { LogoutIcon, RefreshIcon, ShieldIcon } from "./icons";
 
 type Props = {
   me: AuthMe | null;
+  csrfToken: string | null;
   onLogout: () => void;
   onUnauthorized: () => void;
 };
 
-export function Settings({ me, onLogout, onUnauthorized }: Props) {
+export function Settings({ me, csrfToken, onLogout, onUnauthorized }: Props) {
   const [llm, setLlm] = useState<LlmStatus | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [updating, setUpdating] = useState(false);
+
+  // Configuración del NAS editable en caliente (la guarda el backend).
+  const [nas, setNas] = useState<NasConfig | null>(null);
+  const [maxMb, setMaxMb] = useState("");
+  const [rate, setRate] = useState("");
+  const [reglas, setReglas] = useState("");
+  const [nasError, setNasError] = useState<string | null>(null);
+  const [nasOk, setNasOk] = useState(false);
+  const [guardandoNas, setGuardandoNas] = useState(false);
+
+  function aplicarNas(config: NasConfig): void {
+    setNas(config);
+    setMaxMb(String(config.upload_max_mb));
+    setRate(String(config.upload_rate_per_min));
+    setReglas(
+      config.classifier_rules
+        ? JSON.stringify(config.classifier_rules, null, 2)
+        : "",
+    );
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -37,10 +58,70 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
       .catch(() => {
         /* el build se muestra como "—" si /health no responde */
       });
+    api
+      .nasConfig()
+      .then((config) => {
+        if (!cancelled) aplicarNas(config);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) onUnauthorized();
+        else setNasError(err instanceof Error ? err.message : "Error");
+      });
     return () => {
       cancelled = true;
     };
   }, [onUnauthorized]);
+
+  /** Valida y guarda los ajustes del NAS; el backend vuelve a validar. */
+  async function guardarNas(): Promise<void> {
+    if (guardandoNas) return;
+    setNasError(null);
+    setNasOk(false);
+    const maximo = Number(maxMb);
+    const porMinuto = Number(rate);
+    if (!Number.isInteger(maximo) || maximo < 1 || maximo > 500) {
+      setNasError("El límite por archivo debe ser un entero entre 1 y 500 MB.");
+      return;
+    }
+    if (!Number.isInteger(porMinuto) || porMinuto < 0 || porMinuto > 600) {
+      setNasError(
+        "Las subidas por minuto deben ser un entero entre 0 y 600 (0 = sin límite).",
+      );
+      return;
+    }
+    const textoReglas = reglas.trim();
+    if (textoReglas) {
+      try {
+        JSON.parse(textoReglas);
+      } catch (err) {
+        setNasError(
+          `Las reglas no son JSON válido: ${
+            err instanceof Error ? err.message : "revisa la sintaxis"
+          }`,
+        );
+        return;
+      }
+    }
+    setGuardandoNas(true);
+    try {
+      const config = await api.updateNasConfig(
+        {
+          upload_max_mb: maximo,
+          upload_rate_per_min: porMinuto,
+          classifier_rules: textoReglas,
+        },
+        csrfToken,
+      );
+      aplicarNas(config);
+      setNasOk(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) onUnauthorized();
+      else setNasError(err instanceof Error ? err.message : "No se pudo guardar");
+    } finally {
+      setGuardandoNas(false);
+    }
+  }
 
   // Boton de rescate: borra Service Worker + caches y recarga desde la red.
   // Sirve cuando el iPhone conserva un bundle viejo atascado.
@@ -101,6 +182,85 @@ export function Settings({ me, onLogout, onUnauthorized }: Props) {
             <dd>{me?.password_configured ? "configurada" : "no (usa el token)"}</dd>
           </div>
         </dl>
+      </section>
+
+      <section className="card">
+        <header className="card-head">
+          <h2>NAS</h2>
+          <span className={`pill ${nasOk ? "ok" : ""}`}>
+            {guardandoNas ? "guardando" : nasOk ? "guardado" : "editable"}
+          </span>
+        </header>
+        {nasError && <p className="form-error">{nasError}</p>}
+        {!nas && !nasError && <div className="skeleton line" />}
+        {nas && (
+          <form
+            className="nas-config"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              void guardarNas();
+            }}
+          >
+            <label>
+              <span>Ruta de entrada</span>
+              <input value={nas.inbox} readOnly />
+            </label>
+            <p className="muted">
+              Fija por el volumen del contenedor: no se cambia desde aquí.
+            </p>
+            <label>
+              <span>Límite por archivo (MB)</span>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                inputMode="numeric"
+                value={maxMb}
+                onChange={(event) => {
+                  setMaxMb(event.target.value);
+                  setNasOk(false);
+                }}
+              />
+            </label>
+            <label>
+              <span>Subidas por minuto (0 = sin límite)</span>
+              <input
+                type="number"
+                min={0}
+                max={600}
+                inputMode="numeric"
+                value={rate}
+                onChange={(event) => {
+                  setRate(event.target.value);
+                  setNasOk(false);
+                }}
+              />
+            </label>
+            <details>
+              <summary>Reglas de clasificación (JSON)</summary>
+              <textarea
+                value={reglas}
+                spellCheck={false}
+                onChange={(event) => {
+                  setReglas(event.target.value);
+                  setNasOk(false);
+                }}
+                placeholder='{"rules": [...]}'
+              />
+              <p className="muted">
+                Vacío = reglas de fábrica (Fotos, Videos, Audio, Documentos).
+                La extensión manda; el tipo MIME es el respaldo.
+              </p>
+            </details>
+            <button className="btn primary" type="submit" disabled={guardandoNas}>
+              {guardandoNas ? "Guardando…" : "Guardar ajustes del NAS"}
+            </button>
+            <p className="muted">
+              Se aplica a la próxima subida, sin reiniciar el agente.
+            </p>
+          </form>
+        )}
       </section>
 
       <section className="card">

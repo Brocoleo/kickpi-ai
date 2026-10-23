@@ -85,8 +85,10 @@ class Settings(BaseSettings):
     nas_inbox_rel: str = "files/Entrada"
     upload_max_mb: int = 50
     # Freno anti-abuso: subidas por minuto y por IP. El NAS es privado, pero
-    # una sesión robada no debe poder llenar el disco a base de POST.
-    upload_rate_per_min: int = 10
+    # una sesión robada no debe poder llenar el disco a base de POST. Con 3
+    # subidas en paralelo desde la PWA, 10 se queda corto; 60 permite una
+    # tanda completa. Es editable en caliente desde Ajustes → NAS.
+    upload_rate_per_min: int = 60
     # Los archivos se crean propiedad del usuario del host, no de root.
     nas_inbox_uid: int = 1000
     nas_inbox_gid: int = 1000
@@ -152,8 +154,9 @@ hacerlo desde la pestaña Archivos de la app.
 sistema incluye «📎 Adjunto en la NAS: <ruta>». Ese archivo YA ESTÁ \
 VERIFICADO por el backend; NO gastes consultas (`nas_search`, `nas_recent`, \
 `nas_list`) para confirmar su existencia. Usa la ruta directamente. El \
-backend lo clasifica solo: `Entrada/Fotos/`, `Entrada/Videos/` o \
-`Entrada/Documentos/`; la ruta del mensaje ya incluye la carpeta correcta.
+backend lo clasifica solo: `Entrada/Fotos/`, `Entrada/Videos/`, \
+`Entrada/Audio/` o `Entrada/Documentos/`; la ruta del mensaje ya incluye la \
+carpeta correcta.
 - **Elección de herramienta NAS**: para metadatos de archivos RECIENTES \
 (subidos en esta conversación) usa `nas_list` sobre la carpeta (lectura \
 viva del filesystem, sin índice). `nas_search` consulta el índice con hasta \

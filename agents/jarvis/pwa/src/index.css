@@ -1196,6 +1196,80 @@ code {
   animation: spin 1s linear infinite;
 }
 
+.attach-list {
+  display: flex;
+  flex-basis: 100%;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.nas-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nas-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nas-config input,
+.nas-config textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.nas-config input:focus,
+.nas-config textarea:focus {
+  outline: none;
+  border-color: rgba(94, 234, 212, 0.5);
+}
+
+.nas-config input[readonly] {
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.nas-config textarea {
+  min-height: 180px;
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.nas-config details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.attach-list .attach-chip {
+  flex-basis: auto;
+}
+
+.attach-chip.subiendo {
+  opacity: 0.72;
+}
+
+.attach-chip.error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.attach-chip.error svg {
+  color: var(--danger);
+}
+
 .attach-chip {
   display: flex;
   flex-basis: 100%;

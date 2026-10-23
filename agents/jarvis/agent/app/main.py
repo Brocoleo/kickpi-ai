@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
-from . import approvals_client, memory, sessions
+from . import approvals_client, config_store, memory, sessions
 from .approvals_client import ApprovalsError
 from .auth import (
     auth_method,
@@ -42,6 +42,7 @@ from .auth import (
     require_human_session,
     session_fingerprint_of,
 )
+from .classifier import clasificar
 from .config import SYSTEM_PROMPT, get_settings
 from .csrf import check_origin, issue_token
 from .db import init_db, session as db_session
@@ -62,7 +63,7 @@ from .tools_client import TOOL_SPECS, ToolsError, call_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jarvis-agent")
 
-VERSION = "0.17.0"
+VERSION = "0.18.0"
 
 # Extensiones que no se aceptan como adjuntos. No se ejecutan en el servidor,
 # pero la NAS no debe convertirse en un depósito de programas descargables.
@@ -79,33 +80,15 @@ _UPLOAD_BLOCKED_EXT = {
     ".vbs",
 }
 
-# Clasificación automática de adjuntos dentro de Entrada/. La extensión manda;
-# el content_type solo se usa como respaldo (los navegadores lo confunden).
-_IMAGE_EXT = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".webp",
-    ".avif",
-    ".bmp",
-    ".heic",
-    ".heif",
-    ".tif",
-    ".tiff",
-}
-_VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"}
+# Clasificación automática de adjuntos dentro de Entrada/: las reglas viven en
+# `classifier_rules.json` (extensión manda; el content_type es respaldo).
 
 
-def _carpeta_adjunto(nombre: str, content_type: str | None) -> str:
+def _carpeta_adjunto(
+    nombre: str, content_type: str | None, reglas: dict | None = None
+) -> str:
     """Devuelve la subcarpeta de Entrada/ donde va el adjunto."""
-    ext = Path(nombre).suffix.lower()
-    tipo = (content_type or "").lower()
-    if ext in _IMAGE_EXT or tipo.startswith("image/"):
-        return "Fotos"
-    if ext in _VIDEO_EXT or tipo.startswith("video/"):
-        return "Videos"
-    return "Documentos"
+    return clasificar(nombre, content_type, reglas)
 
 
 @asynccontextmanager
@@ -1023,7 +1006,10 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     Windows/Linux: la NAS es de datos, no un depósito de programas.
     """
     settings = get_settings()
-    limite = settings.upload_max_mb * 1024 * 1024
+    max_mb, subidas_min, reglas = await asyncio.to_thread(
+        config_store.ajustes_subida
+    )
+    limite = max_mb * 1024 * 1024
     inbox = Path(settings.nas_inbox_dir)
 
     # El freno por IP va antes de tocar el disco. Detrás de Tailscale Serve
@@ -1032,7 +1018,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     ip = xff.split(",")[0].strip() if xff else (
         request.client.host if request.client else "desconocida"
     )
-    permitido, reintentar = upload_allowed(ip, settings.upload_rate_per_min)
+    permitido, reintentar = upload_allowed(ip, subidas_min)
     if not permitido:
         raise HTTPException(
             429,
@@ -1052,7 +1038,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
     sello = time.strftime("%Y%m%d-%H%M%S")
     nombre = f"{sello}-{uuid.uuid4().hex[:4]}-{limpio[:120]}"
 
-    carpeta = _carpeta_adjunto(limpio, file.content_type)
+    carpeta = _carpeta_adjunto(limpio, file.content_type, reglas)
     destino_dir = inbox / carpeta
     try:
         destino_dir.mkdir(parents=True, exist_ok=True)
@@ -1086,7 +1072,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> dict:
                 tamano += len(trozo)
                 if tamano > limite:
                     raise HTTPException(
-                        413, f"El archivo supera el límite de {settings.upload_max_mb} MB"
+                        413, f"El archivo supera el límite de {max_mb} MB"
                     )
                 salida.write(trozo)
     except HTTPException:
@@ -1229,6 +1215,48 @@ async def nas_status() -> dict:
     datos = await _tools_json("/nas/status")
     datos["inbox"] = get_settings().nas_inbox_rel.strip("/")
     return datos
+
+
+class ConfigNASIn(BaseModel):
+    """Cambios de configuración del NAS (parciales)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    upload_max_mb: int | str | None = None
+    upload_rate_per_min: int | str | None = None
+    # JSON en texto: así el error de sintaxis se explica con línea y columna,
+    # y una cadena vacía restaura las reglas de fábrica.
+    classifier_rules: str | None = None
+
+
+@app.get(
+    "/api/admin/nas",
+    tags=["admin"],
+    dependencies=[Depends(require_human_session)],
+)
+async def get_nas_config() -> dict:
+    """Ajustes del NAS efectivos (requiere sesión de navegador)."""
+    return await asyncio.to_thread(config_store.valores_actuales)
+
+
+@app.patch(
+    "/api/admin/nas",
+    tags=["admin"],
+    dependencies=[Depends(require_human_mutation)],
+)
+async def patch_nas_config(cambios: ConfigNASIn) -> dict:
+    """Guarda ajustes del NAS en caliente (sesión humana + CSRF).
+
+    Solo se tocan límites y reglas de clasificación: la ruta del inbox queda
+    atada al volumen del contenedor y no se cambia desde la PWA.
+    """
+    datos = cambios.model_dump(exclude_none=True)
+    if not datos:
+        raise HTTPException(400, "No hay cambios que guardar")
+    try:
+        return await asyncio.to_thread(config_store.guardar, datos)
+    except config_store.ErrorConfig as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/nas/file", tags=["nas"], dependencies=[Depends(require_auth)])

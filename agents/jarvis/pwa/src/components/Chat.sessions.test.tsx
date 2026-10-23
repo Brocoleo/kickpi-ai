@@ -14,6 +14,7 @@ import type { Conversation, StoredMessage } from "../types";
  */
 
 const apiMock = vi.hoisted(() => ({
+  nasConfig: vi.fn(),
   conversations: vi.fn(),
   conversation: vi.fn(),
   chatStream: vi.fn(),
@@ -57,6 +58,7 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   Object.values(apiMock).forEach((fn) => fn.mockReset());
+  apiMock.nasConfig.mockResolvedValue({ upload_max_mb: 50 });
   apiMock.stopChat.mockResolvedValue({ ok: true, stopped: true });
   apiMock.deleteConversation.mockResolvedValue({ ok: true, conversation_id: "c2" });
 });

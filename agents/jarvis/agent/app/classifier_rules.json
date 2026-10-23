@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "default_folder": "Documentos",
+  "rules": [
+    {
+      "folder": "Fotos",
+      "extensions": [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".avif",
+        ".bmp",
+        ".heic",
+        ".heif",
+        ".tif",
+        ".tiff"
+      ],
+      "mimes": ["image/"]
+    },
+    {
+      "folder": "Videos",
+      "extensions": [".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"],
+      "mimes": ["video/"]
+    },
+    {
+      "folder": "Audio",
+      "extensions": [
+        ".mp3",
+        ".m4a",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".opus",
+        ".aac",
+        ".aiff",
+        ".wma"
+      ],
+      "mimes": ["audio/"]
+    },
+    {
+      "folder": "Documentos",
+      "extensions": [
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".odt",
+        ".rtf",
+        ".txt",
+        ".md",
+        ".xls",
+        ".xlsx",
+        ".ods",
+        ".csv",
+        ".ppt",
+        ".pptx",
+        ".odp",
+        ".epub"
+      ],
+      "mimes": ["application/pdf", "text/"]
+    }
+  ]
+}
