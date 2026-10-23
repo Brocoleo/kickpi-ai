@@ -331,14 +331,44 @@ type ProgresoSubida = {
   /** Lote en curso (1-based) y cuántos lotes tiene la tanda. */
   lote: number;
   lotes: number;
+  /** Archivos que van en el lote en curso (para la fracción de bytes). */
+  enLote: number;
 };
 
 /** Tope de archivos por mensaje: 100 fotos de una vez es el caso real. */
 const MAX_ADJUNTOS = 100;
-/** Archivos por petición: 10 × 50 MB = 500 MB, el tope del endpoint batch. */
+/** Archivos por petición: 10 como máximo, para no armar cuerpos enormes. */
 const LOTE_MAXIMO = 10;
-/** Peso por petición: por debajo del corte del servidor (500 MB). */
-const LOTE_MAXIMO_BYTES = 450 * 1024 * 1024;
+/**
+ * Peso por petición. Más bajo que el corte del servidor (500 MB) a propósito:
+ * con lotes de ~20 MB la barra avanza cada pocos segundos y una subida lenta
+ * por Tailscale no parece colgada.
+ */
+const LOTE_MAXIMO_BYTES = 20 * 1024 * 1024;
+
+/** API de wake lock (no está en todos los lib.dom ni en todos los navegadores). */
+type WakeLockSimple = { release: () => Promise<void> };
+
+async function mantenerPantallaActiva(): Promise<WakeLockSimple | null> {
+  try {
+    const nav = navigator as Navigator & {
+      wakeLock?: { request: (tipo: "screen") => Promise<WakeLockSimple> };
+    };
+    if (!nav.wakeLock) return null;
+    return await nav.wakeLock.request("screen");
+  } catch {
+    // Sin permiso, pestaña oculta o iOS viejo: se sube igual, sin wake lock.
+    return null;
+  }
+}
+
+function soltarPantalla(wake: WakeLockSimple | null): void {
+  if (!wake) return;
+  void wake.release().catch(() => {
+    /* ya liberado o pestaña cerrada */
+  });
+}
+
 /** Reintentos ante 429 (límite por IP) antes de marcar el lote en error. */
 const REINTENTOS_429 = 3;
 /** Tope de espera que se acepta del `Retry-After` (no dormir 10 minutos). */
@@ -390,6 +420,14 @@ export function Chat({
   const [progreso, setProgreso] = useState<ProgresoSubida | null>(null);
   // Segundos que se está esperando por el límite de subidas (429).
   const [espera, setEspera] = useState<number | null>(null);
+  // Se está preparando la selección (iOS materializa 100 File y bloquea).
+  const [procesandoSeleccion, setProcesandoSeleccion] = useState(false);
+  // Bytes del lote en vuelo, informados por el XHR (mueve la barra dentro
+  // del lote; sin esto la subida de 20 MB parecía congelada).
+  const [avanceLote, setAvanceLote] = useState<{
+    cargado: number;
+    total: number;
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   // Límite real por archivo: lo fija Ajustes → NAS (la subida lo revalida).
   const [limiteMb, setLimiteMb] = useState(MAX_ADJUNTOS_MB);
@@ -833,19 +871,35 @@ export function Chat({
     if (!elegidos.length) return;
 
     setUploadError(null);
+    // Con 100 fotos, iOS tarda en materializar los `File`. Se avisa antes de
+    // recorrerlos y se cede un frame (rAF + timeout) para que el aviso llegue
+    // a pintarse: sin esto la pantalla se quedaba congelada sin señal de vida.
+    setProcesandoSeleccion(true);
+    await new Promise<void>((listo) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => window.setTimeout(listo, 0));
+      } else {
+        window.setTimeout(listo, 0);
+      }
+    });
+
     const nuevos: AdjuntoPendiente[] = [];
     let grandes = 0;
     let sobrantes = 0;
-    for (const file of elegidos) {
-      if (file.size > limiteMb * 1024 * 1024) {
-        grandes += 1;
-        continue;
+    try {
+      for (const file of elegidos) {
+        if (file.size > limiteMb * 1024 * 1024) {
+          grandes += 1;
+          continue;
+        }
+        if (adjuntos.length + nuevos.length >= MAX_ADJUNTOS) {
+          sobrantes += 1;
+          continue;
+        }
+        nuevos.push({ id: uid(), file, estado: "cola" });
       }
-      if (adjuntos.length + nuevos.length >= MAX_ADJUNTOS) {
-        sobrantes += 1;
-        continue;
-      }
-      nuevos.push({ id: uid(), file, estado: "cola" });
+    } finally {
+      setProcesandoSeleccion(false);
     }
     const avisos: string[] = [];
     if (grandes) avisos.push(`Máximo ${limiteMb} MB por archivo`);
@@ -856,7 +910,13 @@ export function Chat({
 
     const lotes = repartirLotes(nuevos, tamanoLote);
     let hechos = 0;
-    setProgreso({ hechos: 0, total: nuevos.length, lote: 1, lotes: lotes.length });
+    setProgreso({
+      hechos: 0,
+      total: nuevos.length,
+      lote: 1,
+      lotes: lotes.length,
+      enLote: lotes[0]?.length ?? 0,
+    });
 
     /** Vuelca el resultado del lote en sus chips (por id, no por posición). */
     const marcarLote = (
@@ -883,65 +943,84 @@ export function Chat({
     };
 
     try {
-      for (let indice = 0; indice < lotes.length; indice += 1) {
-        const lote = lotes[indice];
-        const numero = indice + 1;
-        // Los chips del lote pasan de «en cola» a «subiendo» al arrancar.
-        const ids = new Set(lote.map((item) => item.id));
-        setAdjuntos((prev) =>
-          prev.map((chip) =>
-            ids.has(chip.id) && chip.estado === "cola"
-              ? { ...chip, estado: "subiendo" }
-              : chip,
-          ),
-        );
-        setProgreso({
-          hechos,
-          total: nuevos.length,
-          lote: numero,
-          lotes: lotes.length,
-        });
+      const wake = await mantenerPantallaActiva();
+      try {
+        for (let indice = 0; indice < lotes.length; indice += 1) {
+          const lote = lotes[indice];
+          const numero = indice + 1;
+          // Los chips del lote pasan de «en cola» a «subiendo» al arrancar.
+          const ids = new Set(lote.map((item) => item.id));
+          setAdjuntos((prev) =>
+            prev.map((chip) =>
+              ids.has(chip.id) && chip.estado === "cola"
+                ? { ...chip, estado: "subiendo" }
+                : chip,
+            ),
+          );
+          setProgreso({
+            hechos,
+            total: nuevos.length,
+            lote: numero,
+            lotes: lotes.length,
+            enLote: lote.length,
+          });
 
-        let respuesta: UploadBatchResult | null = null;
-        let ultimoError: unknown = null;
-        for (let intento = 1; intento <= REINTENTOS_429; intento += 1) {
-          try {
-            respuesta = await api.uploadBatch(
-              lote.map((item) => item.file),
-              csrfToken,
-            );
-            break;
-          } catch (err) {
-            ultimoError = err;
-            if (err instanceof ApiError && err.status === 401) {
-              onUnauthorized();
-              throw err;
+          // El XHR dispara onprogress muchas veces por segundo: se limita a
+          // ~8 avisos/s para no provocar un render por cada paquete.
+          let ultimoAviso = 0;
+          const alAvanzar = (cargado: number, total: number): void => {
+            const ahora = Date.now();
+            if (ahora - ultimoAviso < 120 && cargado < total) return;
+            ultimoAviso = ahora;
+            setAvanceLote({ cargado, total });
+          };
+
+          let respuesta: UploadBatchResult | null = null;
+          let ultimoError: unknown = null;
+          for (let intento = 1; intento <= REINTENTOS_429; intento += 1) {
+            try {
+              respuesta = await api.uploadBatch(
+                lote.map((item) => item.file),
+                csrfToken,
+                alAvanzar,
+              );
+              break;
+            } catch (err) {
+              ultimoError = err;
+              if (err instanceof ApiError && err.status === 401) {
+                onUnauthorized();
+                throw err;
+              }
+              const segundos =
+                err instanceof ApiError && err.status === 429
+                  ? Math.min(
+                      ESPERA_MAXIMA_S,
+                      Math.max(0, err.retryAfter ?? 30),
+                    )
+                  : 0;
+              if (segundos <= 0 || intento === REINTENTOS_429) throw err;
+              setEspera(segundos);
+              await new Promise<void>((listo) =>
+                window.setTimeout(listo, segundos * 1000),
+              );
+              setEspera(null);
             }
-            const segundos =
-              err instanceof ApiError && err.status === 429
-                ? Math.min(
-                    ESPERA_MAXIMA_S,
-                    Math.max(0, err.retryAfter ?? 30),
-                  )
-                : 0;
-            if (segundos <= 0 || intento === REINTENTOS_429) throw err;
-            setEspera(segundos);
-            await new Promise<void>((listo) =>
-              window.setTimeout(listo, segundos * 1000),
-            );
-            setEspera(null);
           }
-        }
-        if (!respuesta) throw ultimoError ?? new Error("No se pudo subir el lote");
+          if (!respuesta) throw ultimoError ?? new Error("No se pudo subir el lote");
 
-        marcarLote(lote, respuesta);
-        hechos += lote.length;
-        setProgreso({
-          hechos,
-          total: nuevos.length,
-          lote: numero,
-          lotes: lotes.length,
-        });
+          setAvanceLote(null);
+          marcarLote(lote, respuesta);
+          hechos += lote.length;
+          setProgreso({
+            hechos,
+            total: nuevos.length,
+            lote: numero,
+            lotes: lotes.length,
+            enLote: lote.length,
+          });
+        }
+      } finally {
+        soltarPantalla(wake);
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onUnauthorized();
@@ -959,6 +1038,7 @@ export function Chat({
     } finally {
       setEspera(null);
       setProgreso(null);
+      setAvanceLote(null);
     }
   }
 
@@ -993,6 +1073,8 @@ export function Chat({
     setUploadError(null);
     setProgreso(null);
     setEspera(null);
+    setAvanceLote(null);
+    setProcesandoSeleccion(false);
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(STORAGE_KEY);
     setInput("");
@@ -1080,6 +1162,27 @@ export function Chat({
   // Herramienta en curso sin burbuja de texto: se muestra sola, con nombre.
   const showLive = sending && Boolean(liveTool) && !hayBurbuja;
   const showThinking = sending && !hayBurbuja && !liveTool;
+
+  // Avance real de la tanda: archivos resueltos + la fracción de bytes que
+  // lleva el lote en vuelo (XHR). Sin esto la barra saltaba de golpe por lote.
+  const fraccionLote =
+    avanceLote && avanceLote.total > 0 && progreso
+      ? Math.min(1, avanceLote.cargado / avanceLote.total) * progreso.enLote
+      : 0;
+  const porcentajeSubida = progreso
+    ? Math.min(
+        100,
+        Math.round(
+          ((progreso.hechos + fraccionLote) / Math.max(1, progreso.total)) * 100,
+        ),
+      )
+    : 0;
+  const detalleProgreso =
+    espera !== null
+      ? ` · esperando ${espera} s`
+      : avanceLote
+        ? ` · ${peso(avanceLote.cargado)}/${peso(avanceLote.total)}`
+        : "";
 
   // Agrupa por día para no perder la noción del tiempo en un hilo largo.
   const conFechas = useMemo(() => {
@@ -1435,23 +1538,23 @@ export function Chat({
           void send();
         }}
       >
+        {procesandoSeleccion && (
+          <div className="attach-progress" role="status">
+            <span>Preparando la selección…</span>
+            <div className="attach-bar" aria-hidden="true">
+              <span className="indeterminada" />
+            </div>
+          </div>
+        )}
         {progreso && (
           <div className="attach-progress" role="status">
             <span>
               Lote {progreso.lote} de {progreso.lotes} · {progreso.hechos}/
               {progreso.total}
-              {espera !== null
-                ? ` · esperando ${espera} s por el límite de subidas`
-                : ""}
+              {detalleProgreso}
             </span>
             <div className="attach-bar" aria-hidden="true">
-              <span
-                style={{
-                  width: `${Math.round(
-                    (progreso.hechos / Math.max(1, progreso.total)) * 100,
-                  )}%`,
-                }}
-              />
+              <span style={{ width: `${porcentajeSubida}%` }} />
             </div>
           </div>
         )}
@@ -1499,14 +1602,14 @@ export function Chat({
           multiple
           aria-label="Archivos para adjuntar"
           onChange={(event) => void attachFile(event)}
-          disabled={sending || subiendo}
+          disabled={sending || subiendo || procesandoSeleccion}
         />
         <button
           type="button"
           className="icon-btn attach-btn"
           aria-label="Adjuntar archivos"
           onClick={() => fileRef.current?.click()}
-          disabled={sending || subiendo}
+          disabled={sending || subiendo || procesandoSeleccion}
         >
           {subiendo ? <RefreshIcon className="spin-icon" /> : <PaperclipIcon />}
         </button>

@@ -39,6 +39,14 @@ function retryAfterDe(res: Response): number | undefined {
   return Number.isFinite(segundos) && segundos >= 0 ? segundos : undefined;
 }
 
+/** Igual que `retryAfterDe`, para las respuestas de un `XMLHttpRequest`. */
+function retryAfterXhr(xhr: XMLHttpRequest): number | undefined {
+  const raw = xhr.getResponseHeader("Retry-After");
+  if (!raw) return undefined;
+  const segundos = Number(raw);
+  return Number.isFinite(segundos) && segundos >= 0 ? segundos : undefined;
+}
+
 /** Error HTTP con el `detail` del backend (que ya viene redactado para la UI). */
 async function errorDeRespuesta(res: Response): Promise<ApiError> {
   let detail = res.statusText || `HTTP ${res.status}`;
@@ -348,23 +356,65 @@ export const api = {
    * El servidor responde 200 aunque algún archivo falle: cada uno trae su
    * resultado. Un 429 significa que el lote entero no cupo en el límite por
    * minuto (`retryAfter` dice cuánto esperar) y NO se escribió nada.
+   *
+   * Usa `XMLHttpRequest` y no `fetch` por una razón concreta: `fetch` no
+   * expone el avance de la subida. Con 10 fotos (30–50 MB) por Tailscale, la
+   * UI parecía colgada; `upload.onprogress` permite mover la barra y ver que
+   * los bytes salen. `onProgress(loaded, total)` es best-effort (incluye el
+   * overhead del multipart).
    */
-  uploadBatch: async (
+  uploadBatch: (
     files: File[],
     csrfToken: string | null,
-  ): Promise<UploadBatchResult> => {
-    const form = new FormData();
-    for (const file of files) form.append("files", file);
-    const res = await fetch("/api/files/upload-batch", {
-      method: "POST",
-      credentials: "same-origin",
-      cache: "no-store",
-      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
-      body: form,
-    });
-    if (!res.ok) throw await errorDeRespuesta(res);
-    return (await res.json()) as UploadBatchResult;
-  },
+    onProgress?: (cargado: number, total: number) => void,
+  ): Promise<UploadBatchResult> =>
+    new Promise<UploadBatchResult>((resolve, reject) => {
+      const form = new FormData();
+      for (const file of files) form.append("files", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/files/upload-batch");
+      xhr.withCredentials = true;
+      xhr.responseType = "text";
+      if (csrfToken) xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+
+      xhr.upload.onprogress = (evento) => {
+        if (evento.lengthComputable && onProgress) {
+          onProgress(evento.loaded, evento.total);
+        }
+      };
+
+      xhr.onload = () => {
+        let datos: unknown = null;
+        try {
+          datos = JSON.parse(xhr.responseText) as unknown;
+        } catch {
+          /* respuesta sin JSON (proxy, error HTML) */
+        }
+        if (xhr.status >= 200 && xhr.status < 300 && datos) {
+          resolve(datos as UploadBatchResult);
+          return;
+        }
+        const detail =
+          datos &&
+          typeof datos === "object" &&
+          typeof (datos as { detail?: unknown }).detail === "string"
+            ? (datos as { detail: string }).detail
+            : xhr.statusText || `HTTP ${xhr.status}`;
+        reject(new ApiError(xhr.status, detail, retryAfterXhr(xhr)));
+      };
+
+      xhr.onerror = () =>
+        reject(
+          new ApiError(
+            0,
+            "No se pudo conectar con el Jarvis: revisa la red y reintenta",
+          ),
+        );
+      xhr.onabort = () => reject(new ApiError(0, "Subida cancelada"));
+
+      xhr.send(form);
+    }),
 
   /** Detiene el turno en curso. Idempotente: `stopped=false` si ya cerró. */
   stopChat: (conversationId: string) =>

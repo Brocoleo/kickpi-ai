@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat } from "./Chat";
 import {
@@ -102,7 +102,11 @@ describe("Chat · adjuntos", () => {
     fireEvent.change(input, { target: { files: [archivo] } });
 
     await screen.findByText("factura.pdf");
-    expect(apiMock.uploadBatch).toHaveBeenCalledWith([archivo], "csrf-1");
+    expect(apiMock.uploadBatch).toHaveBeenCalledWith(
+      [archivo],
+      "csrf-1",
+      expect.any(Function),
+    );
 
     // Con adjunto se puede enviar aunque no haya texto.
     const enviar = screen.getByLabelText("Enviar mensaje") as HTMLButtonElement;
@@ -387,7 +391,49 @@ describe("Chat · adjuntos", () => {
     }
   });
 
-  it("no manda lotes de más de 450 MB (aunque quepan 10 archivos)", async () => {
+  it("muestra el avance en MB dentro del lote (no solo al terminarlo)", async () => {
+    let avisar: ((cargado: number, total: number) => void) | null = null;
+    let resolver: (() => void) | null = null;
+    apiMock.uploadBatch.mockImplementation(
+      (files: File[], _csrf: string | null, onProgress?: typeof avisar) => {
+        avisar = onProgress ?? null;
+        return new Promise<UploadBatchResult>((resolve) => {
+          resolver = () =>
+            resolve(loteOk(...files.map((f) => guardado(f.name))));
+        });
+      },
+    );
+
+    const { container } = render(
+      <Chat onUnauthorized={() => {}} csrfToken="csrf-1" />,
+    );
+    await screen.findByText("Hola.");
+
+    const archivos = [0, 1].map((i) => {
+      const file = new File(["x"], `foto${i}.jpg`, { type: "image/jpeg" });
+      Object.defineProperty(file, "size", { value: 5 * 1024 * 1024 });
+      return file;
+    });
+    fireEvent.change(screen.getByLabelText("Archivos para adjuntar"), {
+      target: { files: archivos },
+    });
+
+    await waitFor(() => expect(avisar).not.toBeNull());
+    act(() => avisar?.(5 * 1024 * 1024, 10 * 1024 * 1024));
+
+    const progreso = container.querySelector(".attach-progress");
+    expect(progreso?.textContent).toContain("5.0 MB/10.0 MB");
+    // Medio lote de 2 archivos = 50 % de la tanda.
+    const barra = container.querySelector(".attach-bar span") as HTMLElement;
+    expect(barra.style.width).toBe("50%");
+
+    act(() => resolver?.());
+    await waitFor(() =>
+      expect(container.querySelector(".attach-progress")).toBeNull(),
+    );
+  });
+
+  it("no manda lotes de más de 20 MB (aunque quepan 10 archivos)", async () => {
     apiMock.nasConfig.mockResolvedValue({
       inbox: "files/Entrada",
       inbox_dir: "/mnt/data/nas/files/Entrada",

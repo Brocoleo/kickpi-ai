@@ -1231,6 +1231,20 @@ code {
   transition: width 0.25s ease;
 }
 
+.attach-bar span.indeterminada {
+  width: 35%;
+  animation: attach-indeterminada 1.1s ease-in-out infinite;
+}
+
+@keyframes attach-indeterminada {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 .nas-config {
   display: flex;
   flex-direction: column;
